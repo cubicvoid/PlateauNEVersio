@@ -18,8 +18,8 @@ CPP_SOURCES += src/dsp/filters/filter.cpp
 CPP_SOURCES += src/dsp/filters/utility.cpp
 
 # Library Locations
-LIBDAISY_DIR = ../../libDaisy/
-DAISYSP_DIR = ../../DaisySP/
+LIBDAISY_DIR = ../DaisyExamples/libDaisy/
+DAISYSP_DIR = ../DaisyExamples/DaisySP/
 
 # Core location, and generic Makefile.
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
