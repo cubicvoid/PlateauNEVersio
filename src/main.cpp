@@ -1,6 +1,6 @@
 #define DSJ_PLATEAU_HPP
 
-#include "PlateauTest.hpp"
+#include "Campestria.hpp"
 
 #include "Dattorro.hpp"
 #include "signalsmith/delay.h"
@@ -205,6 +205,13 @@ inline double hardClip(const double &x) {
                             : ((x < -hardClipGain) ? -hardClipGain : x);
 }
 
+unsigned int holdSamples = 32;
+unsigned int rippedCountLeft = 0;
+double leftValue = 1.;
+unsigned int rippedCountRight = 0;
+double rightValue = 1.;
+double smoothing = 0.85;
+
 struct GateFilter {
   double tmp = 0.;
 
@@ -215,13 +222,6 @@ struct GateFilter {
     return tmp;
   }
 };
-
-unsigned int holdSamples = 32;
-unsigned int rippedCountLeft = 0;
-double leftValue = 1.;
-unsigned int rippedCountRight = 0;
-double rightValue = 1.;
-double smoothing = 0.85;
 
 GateFilter leftGateFilter;
 GateFilter rightGateFilter;
