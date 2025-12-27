@@ -2,11 +2,11 @@
 
 #include "Campestria.hpp"
 
-#include "Dattorro.hpp"
+#include "Bogaudio/Lmtr.hpp"
+#include "Bogaudio/bogaudio.hpp"
+#include "ValleyRackFree/Plateau/Dattorro.hpp"
 #include "signalsmith/delay.h"
 #include "signalsmith/envelopes.h"
-#include "src/Lmtr.hpp"
-#include "src/bogaudio.hpp"
 
 using namespace daisy;
 using namespace daisysp;

@@ -3,19 +3,19 @@ TARGET = Campestria
 
 # Sources
 CPP_SOURCES = src/main.cpp
-CPP_SOURCES += utilities/Utilities.cpp
-CPP_SOURCES += dsp/filters/OnePoleFilters.cpp
-CPP_SOURCES += dsp/delays/InterpDelay.cpp
-CPP_SOURCES += Dattorro.cpp
-CPP_SOURCES += src/bogaudio.cpp
-CPP_SOURCES += src/Lmtr.cpp
-CPP_SOURCES += src/utils.cpp
-CPP_SOURCES += src/dsp/analyzer.cpp
-CPP_SOURCES += src/dsp/math.cpp
-CPP_SOURCES += src/dsp/signal.cpp
-CPP_SOURCES += src/dsp/table.cpp
-CPP_SOURCES += src/dsp/filters/filter.cpp
-CPP_SOURCES += src/dsp/filters/utility.cpp
+CPP_SOURCES += lib/ValleyRackFree/utilities/Utilities.cpp
+CPP_SOURCES += lib/ValleyRackFree/Plateau/Dattorro.cpp
+CPP_SOURCES += lib/ValleyRackFree/dsp/filters/OnePoleFilters.cpp
+CPP_SOURCES += lib/ValleyRackFree/dsp/delays/InterpDelay.cpp
+CPP_SOURCES += lib/Bogaudio/bogaudio.cpp
+CPP_SOURCES += lib/Bogaudio/Lmtr.cpp
+CPP_SOURCES += lib/Bogaudio/utils.cpp
+CPP_SOURCES += lib/Bogaudio/dsp/analyzer.cpp
+CPP_SOURCES += lib/Bogaudio/dsp/math.cpp
+CPP_SOURCES += lib/Bogaudio/dsp/signal.cpp
+CPP_SOURCES += lib/Bogaudio/dsp/table.cpp
+CPP_SOURCES += lib/Bogaudio/dsp/filters/filter.cpp
+CPP_SOURCES += lib/Bogaudio/dsp/filters/utility.cpp
 
 # Include paths
 C_INCLUDES += \
