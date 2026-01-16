@@ -5,13 +5,11 @@
 #define RELEASE_MS "release_ms"
 #define THRESHOLD_RANGE "threshold_range"
 
-void Lmtr::Engine::sampleRateChange() {
-	detector.setSampleRate(32000);
-}
+namespace bogaudio {
 
-void Lmtr::sampleRateChange() {
-		engine.sampleRateChange();
-}
+void Lmtr::Engine::sampleRateChange() { detector.setSampleRate(32000); }
+
+void Lmtr::sampleRateChange() { engine.sampleRateChange(); }
 
 // float thresholdParam;
 // float outGainParam;
@@ -28,7 +26,6 @@ void Lmtr::sampleRateChange() {
 // void Lmtr::modulate() {
 // 	_softKnee = kneeParam > 0.5f;
 // }
-
 
 // void Lmtr::modulateChannel() {
 // 	Engine& e = *engine;
@@ -53,28 +50,33 @@ void Lmtr::sampleRateChange() {
 // }
 
 void Lmtr::init() {
-	sampleRateChange();
-	engine.thresholdDb = -30.;
-	engine.outLevel = 1.;
-	float sr = 32000;
-	engine.attackSL.setParams(sr, defaultAttackMs);
-	engine.releaseSL.setParams(sr, defaultReleaseMs);
-	_softKnee = false;
+  sampleRateChange();
+  engine.thresholdDb = -30.;
+  engine.outLevel = 1.;
+  float sr = 32000;
+  engine.attackSL.setParams(sr, defaultAttackMs);
+  engine.releaseSL.setParams(sr, defaultReleaseMs);
+  _softKnee = false;
 }
 
-void Lmtr::processChannel(double leftIn, double rightIn, double &rightOut, double &leftOut) {
-	float env = engine.detector.next(leftIn + rightIn);
-	if (env > engine.lastEnv) {
-		env = engine.attackSL.next(env, engine.lastEnv);
-	}
-	else {
-		env = engine.releaseSL.next(env, engine.lastEnv);
-	}
-	engine.lastEnv = env;
+void Lmtr::processChannel(double leftIn, double rightIn, double &rightOut,
+                          double &leftOut) {
+  float env = engine.detector.next(leftIn + rightIn);
+  if (env > engine.lastEnv) {
+    env = engine.attackSL.next(env, engine.lastEnv);
+  } else {
+    env = engine.releaseSL.next(env, engine.lastEnv);
+  }
+  engine.lastEnv = env;
 
-	float detectorDb = amplitudeToDecibels(env / 5.0f);
-	float compressionDb = engine.compressor.compressionDb(detectorDb, engine.thresholdDb, Compressor::maxEffectiveRatio, _softKnee);
-	engine.amplifier.setLevel(-compressionDb);
-	leftOut = engine.saturator.next(engine.amplifier.next(leftIn) * engine.outLevel);
-	rightOut = engine.saturator.next(engine.amplifier.next(rightIn) * engine.outLevel);
+  float detectorDb = amplitudeToDecibels(env / 5.0f);
+  float compressionDb = engine.compressor.compressionDb(
+      detectorDb, engine.thresholdDb, Compressor::maxEffectiveRatio, _softKnee);
+  engine.amplifier.setLevel(-compressionDb);
+  leftOut =
+      engine.saturator.next(engine.amplifier.next(leftIn) * engine.outLevel);
+  rightOut =
+      engine.saturator.next(engine.amplifier.next(rightIn) * engine.outLevel);
 }
+
+} // namespace bogaudio

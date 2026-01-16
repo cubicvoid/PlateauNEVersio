@@ -1,7 +1,7 @@
 #pragma once
 
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -9,5 +9,3 @@
 #include <cstdlib>
 
 #include "utils.hpp"
-
-using namespace bogaudio;
