@@ -36,7 +36,7 @@ struct LimiterAttackHoldRelease {
   ExponentialRelease release; // see the previous example code
 
   int attackSamples = 0;
-  void configure(double sampleRate) {
+  void Init(double sampleRate) {
     attackSamples = attackMs * 0.001 * sampleRate;
     int holdSamples = holdMs * 0.001 * sampleRate;
     double releaseSamples = releaseMs * 0.001 * sampleRate;
