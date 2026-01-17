@@ -5,11 +5,13 @@
 #include "signalsmith/delay.h"
 #include "signalsmith/envelopes.h"
 
-struct ExponentialRelease {
+namespace campestria {
+
+struct ExponentialFollower {
   double releaseSlew;
   double output = 1;
 
-  ExponentialRelease(double releaseSamples = 1280) {
+  ExponentialFollower(double releaseSamples = 1280) {
     // The exact value is `1 - exp(-1/releaseSamples)`
     // but this is a decent approximation
     releaseSlew = 1 / (releaseSamples + 1);
@@ -33,14 +35,14 @@ struct LimiterAttackHoldRelease {
   signalsmith::envelopes::BoxStackFilter<double> smoother{0};
   // We don't need fractional delays, so this could be nearest-sample
   signalsmith::delay::Delay<double> delay;
-  ExponentialRelease release; // see the previous example code
+  ExponentialFollower follower; // see the previous example code
 
   int attackSamples = 0;
   void Init(double sampleRate) {
     attackSamples = attackMs * 0.001 * sampleRate;
     int holdSamples = holdMs * 0.001 * sampleRate;
-    double releaseSamples = releaseMs * 0.001 * sampleRate;
-    release = ExponentialRelease(releaseSamples);
+    double followerSamples = releaseMs * 0.001 * sampleRate;
+    follower = ExponentialFollower(followerSamples);
 
     peakHold.resize(attackSamples + holdSamples);
     smoother.resize(attackSamples, 3);
@@ -56,7 +58,7 @@ struct LimiterAttackHoldRelease {
       maxGain = limit / std::abs(v);
     }
 
-    return smoother(release.step(-peakHold(-maxGain)));
+    return smoother(follower.step(-peakHold(-maxGain)));
   }
 
   double sample(const double &v) {
@@ -107,3 +109,5 @@ struct PopFilter {
     return tmp;
   }
 };
+
+} // namespace campestria

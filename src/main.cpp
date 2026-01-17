@@ -1,5 +1,3 @@
-#define DSJ_PLATEAU_HPP
-
 #include "Campestria.hpp"
 
 #include "Bogaudio/Lmtr.hpp"
@@ -10,7 +8,7 @@
 
 using namespace daisy;
 using namespace daisysp;
-using namespace bogaudio;
+// using namespace bogaudio;
 
 DaisyVersio hw;
 
@@ -26,10 +24,10 @@ struct Settings {
 Settings &operator*(const Settings &settings) { return *settings; }
 PersistentStorage<Settings> storage(hw.seed.qspi);
 
-LimiterAttackHoldRelease softerLimiterLeft;
-LimiterAttackHoldRelease softerLimiterRight;
+campestria::LimiterAttackHoldRelease softerLimiterLeft;
+campestria::LimiterAttackHoldRelease softerLimiterRight;
 
-Lmtr limiter;
+bogaudio::Lmtr bogLimiter;
 
 const double minus18dBGain = 0.12589254;
 const double minus20dBGain = 0.1;
@@ -77,17 +75,23 @@ struct Samples {
 
 Samples samples;
 
+struct State {
+
+  // input volume modifier is currently unused
+  // double inputVolumeModifier = 1.;
+  // double tempInputVolumeModifier = 1.;
+  unsigned int buttonHoldTimer = 0;
+  unsigned int buttonOffTimer = 0;
+};
+
+State state;
+
 double volumeChange = 0.;
 
 unsigned int holdCount = 0;
 
-double inputVolumeModifier = 1.;
-double tempInputVolumeModifier = inputVolumeModifier;
-
 bool buttonState = false;
 bool previousButtonState = false;
-unsigned int buttonHoldTimer = 0;
-unsigned int buttonOffTimer = 0;
 unsigned int buttonConfirmTime = 32000;
 
 bool confirmationSequence = false;
@@ -187,8 +191,9 @@ inline void saturation(double &x) {
 }
 
 // Fast hyperbolic tangent function.
-inline void hardLimiter(double &x, double &y) {
-  limiter.processChannel(x, y, x, y);
+inline void hardLimiter(double &x, double &y, float thresholdDb = -24.0f) {
+  bogLimiter.engine.thresholdDb = thresholdDb;
+  bogLimiter.processChannel(x, y, x, y);
 }
 
 inline void softLimiter(double &x, double &y) {
@@ -253,13 +258,13 @@ inline void rippedSpeakerRight(double &x, double threshold) {
   x *= rightGateFilter.processLowpass(rightValue);
 }
 
-KnobOnePoleFilter mixKnobLPF;
-KnobOnePoleFilter modDepthKnobLPF;
-KnobOnePoleFilter preDelayKnobLPF;
-KnobOnePoleFilter timeScaleKnobLPF;
-KnobOnePoleFilter toneKnobLPF;
-KnobOnePoleFilter toneKnobZeroLockLPF;
-KnobOnePoleFilter decayKnobLPF;
+campestria::KnobOnePoleFilter mixKnobLPF;
+campestria::KnobOnePoleFilter modDepthKnobLPF;
+campestria::KnobOnePoleFilter preDelayKnobLPF;
+campestria::KnobOnePoleFilter timeScaleKnobLPF;
+campestria::KnobOnePoleFilter toneKnobLPF;
+campestria::KnobOnePoleFilter toneKnobZeroLockLPF;
+campestria::KnobOnePoleFilter decayKnobLPF;
 
 inline void checkIfToneKnobIsMoving(double currentValue) {
   if (((currentValue - previousToneKnobValue) > 0.001) or
@@ -285,14 +290,11 @@ inline void checkIfModDepthKnobIsMoving(double currentValue) {
 // occurs.
 inline void setAndUpdateGainLeds(const double &w, const double &x,
                                  const double &y, const double &z) {
-  LED0PtrRed->Set(w);
-  LED1PtrRed->Set(x);
-  LED2PtrRed->Set(y);
-  LED3PtrRed->Set(z);
-  LED0PtrRed->Update();
-  LED1PtrRed->Update();
-  LED2PtrRed->Update();
-  LED3PtrRed->Update();
+  hw.SetLed(0, w, 0.0f, 0.0f);
+  hw.SetLed(1, x, 0.0f, 0.0f);
+  hw.SetLed(2, y, 0.0f, 0.0f);
+  hw.SetLed(3, z, 0.0f, 0.0f);
+  hw.UpdateLeds();
 }
 
 inline void prepareLeds(const double &w, const double &x, const double &y,
@@ -484,16 +486,16 @@ inline void processSwitches() {
 inline void processButton() {
   if (buttonState) {
     if (buttonMode == 0) {
-      if (buttonHoldTimer < 160000) {
+      if (state.buttonHoldTimer < 160000) {
         gainModeLedTimer = 0;
       }
     }
-    if (buttonHoldTimer == 320000) {
-      ++buttonHoldTimer;
+    if (state.buttonHoldTimer == 320000) {
+      ++state.buttonHoldTimer;
       genericLedTimer = 0;
     }
-    if (buttonHoldTimer == 352001) {
-      ++buttonHoldTimer;
+    if (state.buttonHoldTimer == 352001) {
+      ++state.buttonHoldTimer;
       if (buttonMode == 0) {
         lockedModDepthValue = modDepthValue;
         if (lockModDepthTo3_125_) {
@@ -535,23 +537,24 @@ inline void processButton() {
       freeze = false;
     }
     if (previousButtonState) {
-      if ((buttonHoldTimer > 320000) and (buttonHoldTimer < 352000)) {
+      if ((state.buttonHoldTimer > 320000) and
+          (state.buttonHoldTimer < 352000)) {
         confirmationSequence = true;
       }
       if (buttonMode == 0) {
-        if (buttonHoldTimer < 8000) {
+        if (state.buttonHoldTimer < 8000) {
           gainModeLedTimer = 0;
           params.SetGainMode(params.GainMode() + 1);
         }
       }
     }
-    buttonHoldTimer = 0;
+    state.buttonHoldTimer = 0;
   }
 }
 
 inline void incrementButtonHoldCounterAudioRate() {
   if (buttonState) {
-    ++buttonHoldTimer;
+    ++state.buttonHoldTimer;
   }
 }
 
@@ -673,6 +676,8 @@ inline void processAllParameters() {
   processSwitches();
 }
 
+template <typename T> class Stereo {};
+
 // inline void saveCounterAudioRate() {
 //     if(saveTimer < saveTime) {
 //         ++saveTimer;
@@ -748,7 +753,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
 
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -775,7 +779,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     // saturatedRight *= 1. + mix * mix * mix * mix;
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -789,7 +792,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     // Bogaudio LMTR then stock VCV clip
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
@@ -823,7 +825,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
                             (1.2 - outputAmplification));
     leftOutput *= modifier;
     rightOutput *= modifier;
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -837,9 +838,8 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
     // Foldback distortion. Full wave rectifier that folds back on itself
-    foldbackDistortion(leftOutput, 1. - outputAmplification);
-    foldbackDistortion(rightOutput, 1. - outputAmplification);
-    limiter.engine.thresholdDb = -24.;
+    campestria::foldbackDistortion(leftOutput, 1. - outputAmplification);
+    campestria::foldbackDistortion(rightOutput, 1. - outputAmplification);
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -867,7 +867,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     }
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -901,7 +900,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     }
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -947,7 +945,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
 
-    limiter.engine.thresholdDb = -24.;
     hardLimiter(leftOutput, rightOutput);
     if (gainModeLedTimer < gainModeLedOnTime) {
       ++gainModeLedTimer;
@@ -961,8 +958,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     // Last one is Bogaudio LMTR followed by the ripped speaker
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    limiter.engine.thresholdDb = -30.;
-    hardLimiter(leftOutput, rightOutput);
+    hardLimiter(leftOutput, rightOutput, -30.0f);
     saturatedLeft = leftOutput;
     saturatedRight = rightOutput;
     rippedSpeakerLeft(saturatedLeft,
@@ -992,7 +988,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
   softLimiter(leftOutput, rightOutput);
 }
 
-PopFilter clearPopFilter;
+campestria::PopFilter clearPopFilter;
 
 inline void prepareToClear() {
   if (clear) {
@@ -1024,8 +1020,8 @@ void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
 
     prepareToClear();
 
-    samples.leftInput = hardLimit100_(x[0][i]) * 10.;
-    samples.rightInput = hardLimit100_(x[1][i]) * 10.;
+    samples.leftInput = campestria::hardLimit100_(x[0][i]) * 10.;
+    samples.rightInput = campestria::hardLimit100_(x[1][i]) * 10.;
 
     reverb.process(samples.leftInput * minus18dBGain * minus20dBGain *
                        (1.0 + inputAmplification * 7.) * clearPopCancelValue,
@@ -1070,7 +1066,7 @@ void SetReverbDefaults() {
 int main(void) {
   hw.Init(true);
 
-  limiter.init();
+  bogLimiter.init();
 
   softerLimiterLeft.Init(32000);
   softerLimiterRight.Init(32000);
