@@ -156,14 +156,6 @@ struct ControlState {
   double led3 = 0.;
   double led4 = 0.;
 
-  double knobValue0 = 0.;
-  double knobValue1 = 0.;
-  double knobValue2 = 0.;
-  double knobValue3 = 0.;
-  double knobValue4 = 0.;
-  double knobValue5 = 0.;
-  double knobValue6 = 0.;
-
   SwitchState topSwitch = SwitchState::Left;
   SwitchState bottomSwitch = SwitchState::Right;
 };
@@ -570,13 +562,6 @@ inline void processAllParameters() {
   // Putting this here for larger audio block sizes.
   // Quick knob update times means less noise
   hw.ProcessAnalogControls();
-  controlState.knobValue0 = KNOB0Ptr->Value();
-  controlState.knobValue1 = KNOB1Ptr->Value();
-  controlState.knobValue2 = KNOB2Ptr->Value();
-  controlState.knobValue3 = KNOB3Ptr->Value();
-  controlState.knobValue4 = KNOB4Ptr->Value();
-  controlState.knobValue5 = KNOB5Ptr->Value();
-  controlState.knobValue6 = KNOB6Ptr->Value();
 
   // If the tone knob is not moving and the mode LEDs are not shining, show
   // audio IO levels on LEDs
@@ -588,10 +573,10 @@ inline void processAllParameters() {
 
   // Tone knob parameters smoothly lock to 0 to avoid any clicking when
   // disabling diffusion and unwanted low/high cuts
-  toneKnobValue = toneKnobLPF.processLowpass(controlState.knobValue2);
+  toneKnobValue = toneKnobLPF.processLowpass(hw.GetKnobValue(2));
   checkIfToneKnobIsMoving(toneKnobValue);
   toneKnobZeroLockValue = toneKnobZeroLockLPF.processLowpass(
-      (controlState.knobValue2 >= 0.01) * controlState.knobValue2);
+      (hw.GetKnobValue(2) >= 0.01) * hw.GetKnobValue(2));
   if (toneKnobZeroLockValue < 1.0e-030) {
     toneKnobZeroLockValue = 0.;
   }
@@ -600,19 +585,19 @@ inline void processAllParameters() {
   // with pre-delay, mod depth, and time scale These knobs are thus ran through
   // one pole LPFs. It is important these 1 pole LPFs are evaluated at audio
   // rate.
-  params.wet = mixKnobLPF.processLowpass((controlState.knobValue0 > 0.99) * 1. +
-                                         (controlState.knobValue0 >= 0.01) *
-                                             controlState.knobValue0 *
-                                             (controlState.knobValue0 <= 0.99));
+  params.wet = mixKnobLPF.processLowpass((hw.GetKnobValue(0) > 0.99) * 1. +
+                                         (hw.GetKnobValue(0) >= 0.01) *
+                                             hw.GetKnobValue(0) *
+                                             (hw.GetKnobValue(0) <= 0.99));
   params.dry = 1. - params.wet;
 
   // // As with mix, mod speed need not be locked to zero. Mod speed is not
   // succeptible to noise
-  reverb.setTankModSpeed(0.5 + (controlState.knobValue1 * 100.));
+  reverb.setTankModSpeed(0.5 + (hw.GetKnobValue(1) * 100.));
 
   // Mod depth value also smoothly locks to zero to avoid any clicking
-  modDepthValue = modDepthKnobLPF.processLowpass(
-      (controlState.knobValue3 >= 0.01) * controlState.knobValue3);
+  modDepthValue = modDepthKnobLPF.processLowpass((hw.GetKnobValue(3) >= 0.01) *
+                                                 hw.GetKnobValue(3));
   if (modDepthValue < 1.0e-030) {
     modDepthValue = 0.;
   }
@@ -633,12 +618,12 @@ inline void processAllParameters() {
   // In order for the freeze parameter to not cause any noise, a low pass filter
   // must be applied to the decay param to smoothly move from 100% decay to
   // whatever value is present on the knob.
-  if (controlState.knobValue4 < 0.01) {
+  if (hw.GetKnobValue(4) < 0.01) {
     params.decay = 0.;
-  } else if (controlState.knobValue4 > 0.99) {
+  } else if (hw.GetKnobValue(4) > 0.99) {
     params.decay = 1.;
   } else {
-    params.decay = controlState.knobValue4;
+    params.decay = hw.GetKnobValue(4);
   }
   if (freeze) {
     params.decay = 1.;
@@ -651,12 +636,12 @@ inline void processAllParameters() {
   reverb.setDecay(params.decay);
 
   // Time scale is very succeptible to noise. Smoothly locks to zero
-  if (controlState.knobValue5 < 0.01) {
+  if (hw.GetKnobValue(5) < 0.01) {
     params.timeScale = 0.;
-  } else if (controlState.knobValue5 > 0.99) {
+  } else if (hw.GetKnobValue(5) > 0.99) {
     params.timeScale = 1.;
   } else {
-    params.timeScale = controlState.knobValue5;
+    params.timeScale = hw.GetKnobValue(5);
   }
   params.timeScale = params.timeScale * params.timeScale;
   params.timeScale = 0.0025 + (params.timeScale * 0.9975);
@@ -665,8 +650,8 @@ inline void processAllParameters() {
 
   // // Pre-delay knob is smoothly locked to zero and out of all controls is
   // most succeptible to noise
-  preDelay = preDelayKnobLPF.processLowpass((controlState.knobValue6 >= 0.01) *
-                                            controlState.knobValue6) *
+  preDelay = preDelayKnobLPF.processLowpass((hw.GetKnobValue(6) >= 0.01) *
+                                            hw.GetKnobValue(6)) *
              4.;
   if (preDelay < 1.0e-030) {
     preDelay = 0.;
