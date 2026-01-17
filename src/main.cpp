@@ -90,7 +90,6 @@ double volumeChange = 0.;
 
 unsigned int holdCount = 0;
 
-bool buttonState = false;
 bool previousButtonState = false;
 unsigned int buttonConfirmTime = 32000;
 
@@ -99,7 +98,9 @@ bool confirmationSequenceOne = false;
 bool confirmationSequenceTwo = false;
 unsigned int confirmationSequenceCounter = 0;
 unsigned int confirmationSequenceTimer = 0;
-uint32_t buttonMode = 0;
+
+enum class ButtonMode { Gain, Clear, Freeze };
+ButtonMode buttonMode = ButtonMode::Gain;
 
 unsigned int toneKnobLedTimer = 32001;
 const unsigned int toneKnobLedOnTime = 32000;
@@ -173,8 +174,12 @@ bool shapeSet = true;
 unsigned int lockModDepthTime = 320000;
 unsigned int bufferClearTriggerWindow = 32000;
 
-unsigned int genericLedOnTime = 32000;
-unsigned int genericLedTimer = genericLedOnTime + 1;
+struct LedTimer {
+  unsigned int genericLedOnTime = 32000;
+  unsigned int genericLedTimer = 32001;
+};
+
+LedTimer ledTimer;
 
 bool freeze = false;
 
@@ -298,20 +303,19 @@ inline void prepareLeds(const double &w, const double &x, const double &y,
 }
 
 inline void prepareGenericLed() {
-  if (genericLedTimer < genericLedOnTime) {
-    ++genericLedTimer;
+  if (ledTimer.genericLedTimer < ledTimer.genericLedOnTime) {
+    ++ledTimer.genericLedTimer;
     prepareLeds(1., 1., 1., 1.);
-  } else if (genericLedTimer == genericLedOnTime) {
-    genericLedTimer = genericLedOnTime + 1;
+  } else if (ledTimer.genericLedTimer == ledTimer.genericLedOnTime) {
+    ledTimer.genericLedTimer = ledTimer.genericLedOnTime + 1;
     prepareLeds(0., 0., 0., 0.);
   }
 }
 
-inline void checkButton() {
-  previousButtonState = buttonState;
-  hw.tap.Debounce();
-  buttonState = hw.tap.Pressed() or !hw.gate.State();
-}
+inline void checkButton() { hw.tap.Debounce(); }
+
+bool gateState = false;
+inline void checkGate() { gateState = !hw.gate.State(); }
 
 inline void checkSwitches() {
   controlState.topSwitch =
@@ -469,6 +473,12 @@ inline void processSwitches() {
   }
 }
 
+template <ButtonMode M> void processButton();
+
+template <> void processButton<ButtonMode::Gain>() {}
+template <> void processButton<ButtonMode::Clear>() {}
+template <> void processButton<ButtonMode::Freeze>() {}
+
 // Button has three modes, gain control, buffer clear, freeze.
 // Hold down the button for 10 seconds, when the LEDs come on
 // press again within one second to confirm mode change. If x gain control mode
@@ -476,19 +486,19 @@ inline void processSwitches() {
 // mode, a rising edge will trigger the buffers to clear.
 // In freeze mode, holding the button will freeze the buffers.
 inline void processButton() {
-  if (buttonState) {
-    if (buttonMode == 0) {
+  if (hw.tap.Pressed()) {
+    if (buttonMode == ButtonMode::Gain) {
       if (state.buttonHoldTimer < 160000) {
         gainModeLedTimer = 0;
       }
     }
     if (state.buttonHoldTimer == 320000) {
       ++state.buttonHoldTimer;
-      genericLedTimer = 0;
+      ledTimer.genericLedTimer = 0;
     }
     if (state.buttonHoldTimer == 352001) {
       ++state.buttonHoldTimer;
-      if (buttonMode == 0) {
+      if (buttonMode == ButtonMode::Gain) {
         lockedModDepthValue = modDepthValue;
         if (lockModDepthTo3_125_) {
           shapeSet = false;
@@ -498,19 +508,20 @@ inline void processButton() {
         }
       }
     }
-    if (buttonMode == 2) {
+    if (buttonMode == ButtonMode::Freeze) {
       freeze = true;
     } else {
       freeze = false;
     }
-    if (!previousButtonState) {
+    if (hw.tap.RisingEdge()) {
       if (confirmationSequence) {
-        if (genericLedTimer < genericLedOnTime) {
-          if (buttonMode == 2) {
-            buttonMode = 0;
+        if (ledTimer.genericLedTimer < ledTimer.genericLedOnTime) {
+          if (buttonMode == ButtonMode::Freeze) {
+            buttonMode = ButtonMode::Gain;
             // saveData();
           } else {
-            ++buttonMode;
+            buttonMode =
+                static_cast<ButtonMode>(static_cast<int>(buttonMode) + 1);
             // saveData();
           }
           confirmationSequence = false;
@@ -519,21 +530,21 @@ inline void processButton() {
           confirmationSequence = false;
         }
       }
-      if (buttonMode == 1) {
-        genericLedTimer = 0;
+      if (buttonMode == ButtonMode::Clear) {
+        ledTimer.genericLedTimer = 0;
         clear = true;
       }
     }
   } else {
-    if (buttonMode == 2) {
+    if (buttonMode == ButtonMode::Freeze) {
       freeze = false;
     }
-    if (previousButtonState) {
+    if (hw.tap.FallingEdge()) {
       if ((state.buttonHoldTimer > 320000) and
           (state.buttonHoldTimer < 352000)) {
         confirmationSequence = true;
       }
-      if (buttonMode == 0) {
+      if (buttonMode == ButtonMode::Gain) {
         if (state.buttonHoldTimer < 8000) {
           gainModeLedTimer = 0;
           params.SetGainMode(params.GainMode() + 1);
@@ -544,9 +555,9 @@ inline void processButton() {
   }
 }
 
-inline void incrementButtonHoldCounterAudioRate() {
-  if (buttonState) {
-    ++state.buttonHoldTimer;
+inline void incrementButtonHoldCounter(int count) {
+  if (hw.tap.Pressed()) {
+    state.buttonHoldTimer += count;
   }
 }
 
@@ -997,8 +1008,6 @@ void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
 
     processAllParameters();
 
-    incrementButtonHoldCounterAudioRate();
-
     interpolatingDelayHold();
 
     prepareGenericLed();
@@ -1025,7 +1034,8 @@ void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
     out[0][i] = samples.leftOutput;
     out[1][i] = samples.rightOutput;
   }
-};
+  incrementButtonHoldCounter(size);
+}
 
 uint32_t testValue = 0;
 double maxLoad = 0.;
