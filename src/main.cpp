@@ -1,34 +1,16 @@
-#include "Campestria.hpp"
+#include "campestria/Campestria.hpp"
 
-#include "Bogaudio/Lmtr.hpp"
-#include "Bogaudio/bogaudio.hpp"
-#include "ValleyRackFree/Plateau/Dattorro.hpp"
-#include "signalsmith/delay.h"
-#include "signalsmith/envelopes.h"
+// using namespace daisy;
+// using namespace daisysp;
+//  using namespace bogaudio;
 
-using namespace daisy;
-using namespace daisysp;
-// using namespace bogaudio;
+namespace campestria {
+
+using daisy::DaisyVersio;
 
 DaisyVersio hw;
 
-struct SmoothedKnob {
-  float prevValue;
-  float value;
-  float coeff = 0.016;
-  void update(float x) {
-    float scaled = x * 1.01f - 0.005f;
-    float clipped = (scaled >= 1) * 1.0f + (scaled < 1 && scaled > 0) * scaled;
-    value += (clipped - value) * coeff;
-    if (value <= 1.0e-030) {
-      value = 0.0f;
-    }
-  }
-  bool isMoving() {
-    return fabs(value - prevValue) > 0.005;
-  }
-};
-namespace campestria {
+using namespace campestria;
 
 struct OnePoleAudioBlockFilter {
   double coeff = 1.0;
@@ -50,8 +32,6 @@ struct PopFilter : public OnePoleAudioBlockFilter {
   PopFilter() : OnePoleAudioBlockFilter(0.01) {}
 };
 
-} // namespace campestria
-
 // Persistence
 struct Settings {
   int gainMode = 0;
@@ -62,7 +42,7 @@ struct Settings {
   }
 };
 Settings &operator*(const Settings &settings) { return *settings; }
-PersistentStorage<Settings> storage(hw.seed.qspi);
+daisy::PersistentStorage<Settings> storage(hw.seed.qspi);
 
 campestria::LimiterAttackHoldRelease softerLimiterLeft;
 campestria::LimiterAttackHoldRelease softerLimiterRight;
@@ -78,9 +58,13 @@ struct Parameters {
   double decay = 0.877465;
 
   double modDepth = 0.;
+  double modShape = 0.;
+
   double preDelay = 0.;
-  
+
   double timeScale = 1.0;
+
+  double modSpeed = 0.0;
 
   double diffusion = 1.;
   double tempDiffusion = 1.;
@@ -127,8 +111,6 @@ struct State {
   unsigned int buttonOffTimer = 0;
 
   double lockedModDepthValue = 0.;
-  double previousModDepthKnobValue = 0.;
-  bool modDepthKnobIsMoving = false;
 
   bool lockModDepthTo3_125_ = false;
 };
@@ -150,10 +132,6 @@ ButtonMode buttonMode = ButtonMode::Gain;
 
 unsigned int toneKnobLedTimer = 32001;
 const unsigned int toneKnobLedOnTime = 32000;
-bool toneKnobIsMoving = false;
-double previousToneKnobZeroLockValue = 0.;
-
-bool leds = true;
 
 Dattorro reverb(32000, 16, 4.0);
 
@@ -165,31 +143,6 @@ double tempOutputAmplification = outputAmplification;
 double inputAmplification = 0.0;
 double tempInputAmplification = inputAmplification;
 
-enum class SwitchState { Left, Center, Right };
-
-enum class Knob {
-  WET, MOD_SPEED, TONE, MOD_DEPTH, DECAY, TIME_SCALE, PRE_DELAY, LAST
-};
-
-struct ControlState {
-  SmoothedKnob knobs[DaisyVersio::KNOB_LAST];
-
-  SwitchState topSwitch = SwitchState::Left;
-  SwitchState bottomSwitch = SwitchState::Right;
-
-  void update() {
-    for (int i = 0; i < DaisyVersio::KNOB_LAST; i++) {
-      knobs[i].update(hw.GetKnobValue(i));
-    }
-
-  }
-
-  float knob(Knob k) {
-    int index = static_cast<int>(k);
-    return knobs[index].value;
-  }
-};
-
 ControlState controlState;
 
 unsigned int saveTimer = 0;
@@ -197,8 +150,6 @@ bool saveTrigger = false;
 unsigned int saveTime = 32000;
 
 bool clear = false;
-
-bool shapeSet = true;
 
 unsigned int lockModDepthTime = 320000;
 unsigned int bufferClearTriggerWindow = 32000;
@@ -234,15 +185,11 @@ inline double hardClip(const double &x) {
                             : ((x < -hardClipGain) ? -hardClipGain : x);
 }
 
-unsigned int holdSamples = 32;
-unsigned int rippedCountLeft = 0;
-double leftValue = 1.;
-unsigned int rippedCountRight = 0;
-double rightValue = 1.;
-double smoothing = 0.85;
+const unsigned int rippedSpeakerHoldSamples = 32;
 
 struct GateFilter {
   double tmp = 0.;
+  static constexpr double smoothing = 0.85;
 
   GateFilter() { inline double processLowpass(const double &x); }
 
@@ -252,15 +199,15 @@ struct GateFilter {
   }
 };
 
-GateFilter leftGateFilter;
-GateFilter rightGateFilter;
-
 inline void rippedSpeakerLeft(double &x, double threshold) {
-  if (rippedCountLeft < holdSamples) {
+  static GateFilter leftGateFilter;
+  static unsigned int rippedCountLeft = 0;
+  static double leftValue = 1.;
+  if (rippedCountLeft < rippedSpeakerHoldSamples) {
     ++rippedCountLeft;
     leftValue = 0.;
-  } else if (rippedCountLeft == holdSamples) {
-    rippedCountLeft = holdSamples + 1;
+  } else if (rippedCountLeft == rippedSpeakerHoldSamples) {
+    rippedCountLeft = rippedSpeakerHoldSamples + 1;
     leftValue = 1.;
   }
   if (x > threshold || x < -threshold) {
@@ -271,11 +218,14 @@ inline void rippedSpeakerLeft(double &x, double threshold) {
 }
 
 inline void rippedSpeakerRight(double &x, double threshold) {
-  if (rippedCountRight < holdSamples) {
+  static GateFilter rightGateFilter;
+  static unsigned int rippedCountRight = 0;
+  static double rightValue = 1.;
+  if (rippedCountRight < rippedSpeakerHoldSamples) {
     ++rippedCountRight;
     rightValue = 0.;
-  } else if (rippedCountRight == holdSamples) {
-    rippedCountRight = holdSamples + 1;
+  } else if (rippedCountRight == rippedSpeakerHoldSamples) {
+    rippedCountRight = rippedSpeakerHoldSamples + 1;
     rightValue = 1.;
   }
   if (x > threshold || x < -threshold) {
@@ -283,25 +233,6 @@ inline void rippedSpeakerRight(double &x, double threshold) {
     rightValue = 0.;
   }
   x *= rightGateFilter.processLowpass(rightValue);
-}
-
-// campestria::KnobOnePoleFilter knobLPF[DaisyVersio::LED_LAST];
-//  campestria::KnobOnePoleFilter mixKnobLPF;
-//  campestria::KnobOnePoleFilter modDepthKnobLPF;
-//  campestria::KnobOnePoleFilter preDelayKnobLPF;
-//  campestria::KnobOnePoleFilter timeScaleLPF;
-//  campestria::KnobOnePoleFilter toneKnobLPF;
-//  campestria::KnobOnePoleFilter toneKnobZeroLockLPF;
-//  campestria::KnobOnePoleFilter decayKnobLPF;
-
-inline void checkIfModDepthKnobIsMoving(double currentValue) {
-  if (((currentValue - state.previousModDepthKnobValue) > 0.001) or
-      ((currentValue - state.previousModDepthKnobValue) < -0.001)) {
-    state.previousModDepthKnobValue = currentValue;
-    state.modDepthKnobIsMoving = true;
-  } else {
-    state.modDepthKnobIsMoving = false;
-  }
 }
 
 // These pointers are necessary to speed up the code, otherwise severe crackling
@@ -335,7 +266,7 @@ inline void prepareGenericLed() {
 bool gateState = false;
 inline void checkGate() { gateState = !hw.gate.State(); }
 
-inline void checkSwitches() {
+inline void ReadSwitches() {
   controlState.topSwitch = static_cast<SwitchState>(hw.sw[0].Read());
   controlState.bottomSwitch = static_cast<SwitchState>(hw.sw[1].Read());
 }
@@ -344,13 +275,13 @@ inline void ProcessSwitches() {
 
   if (controlState.topSwitch == SwitchState::Right) {
     if (controlState.bottomSwitch == SwitchState::Center) {
-      params.inputDampHigh = controlState.knob(Knob::TONE);
+      params.inputDampHigh = controlState.Knob(Knob::TONE).value;
       if (((params.inputDampHigh - params.previousInputDampHigh) < 0.01) and
           ((params.inputDampHigh - params.previousInputDampHigh) > -0.01)) {
         params.previousInputDampHigh = params.inputDampHigh;
         reverb.setInputFilterHighCutoffPitch(10. -
                                              (10. * params.inputDampHigh));
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -362,13 +293,13 @@ inline void ProcessSwitches() {
         }
       }
     } else if (controlState.bottomSwitch == SwitchState::Right) {
-      params.reverbDampHigh = controlState.knob(Knob::TONE);
+      params.reverbDampHigh = controlState.Knob(Knob::TONE).value;
       if (((params.reverbDampHigh - params.previousReverbDampHigh) < 0.01) and
           ((params.reverbDampHigh - params.previousReverbDampHigh) > -0.01)) {
         params.previousReverbDampHigh = params.reverbDampHigh;
         reverb.setTankFilterHighCutFrequency(10. -
                                              (10. * params.reverbDampHigh));
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -382,12 +313,12 @@ inline void ProcessSwitches() {
     }
   } else if (controlState.topSwitch == SwitchState::Center) {
     if (controlState.bottomSwitch == SwitchState::Center) {
-      params.inputDampLow = controlState.knob(Knob::TONE);
+      params.inputDampLow = controlState.Knob(Knob::TONE).value;
       if (((params.inputDampLow - params.previousInputDampLow) < 0.01) and
           ((params.inputDampLow - params.previousInputDampLow) > -0.01)) {
         params.previousInputDampLow = params.inputDampLow;
         reverb.setInputFilterLowCutoffPitch(params.inputDampLow * 10.);
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -399,12 +330,12 @@ inline void ProcessSwitches() {
         }
       }
     } else if (controlState.bottomSwitch == SwitchState::Right) {
-      params.reverbDampLow = controlState.knob(Knob::TONE);
+      params.reverbDampLow = controlState.Knob(Knob::TONE).value;
       if (((params.reverbDampLow - params.previousReverbDampLow) < 0.01) and
           ((params.reverbDampLow - params.previousReverbDampLow) > -0.01)) {
         params.previousReverbDampLow = params.reverbDampLow;
         reverb.setTankFilterLowCutFrequency(params.reverbDampLow * 10.);
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -421,7 +352,7 @@ inline void ProcessSwitches() {
   if (controlState.bottomSwitch == SwitchState::Left) {
     switch (controlState.topSwitch) {
     case SwitchState::Left:
-      params.tempDiffusion = controlState.knob(Knob::TONE);
+      params.tempDiffusion = controlState.Knob(Knob::TONE).value;
       if (((params.tempDiffusion - params.diffusion) < 0.01) and
           ((params.tempDiffusion - params.diffusion) > -0.01)) {
         params.diffusion = params.tempDiffusion;
@@ -437,7 +368,7 @@ inline void ProcessSwitches() {
           }
           reverb.setTankDiffusion(params.diffusion * 0.7);
         }
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -451,11 +382,11 @@ inline void ProcessSwitches() {
       }
       break;
     case SwitchState::Center:
-      tempInputAmplification = controlState.knob(Knob::TONE);
+      tempInputAmplification = controlState.Knob(Knob::TONE).value;
       if (((tempInputAmplification - inputAmplification) < 0.01) and
           ((tempInputAmplification - inputAmplification) > -0.01)) {
         inputAmplification = tempInputAmplification;
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -469,11 +400,11 @@ inline void ProcessSwitches() {
       }
       break;
     case SwitchState::Right:
-      tempOutputAmplification = controlState.knob(Knob::TONE);
+      tempOutputAmplification = controlState.Knob(Knob::TONE).value;
       if (((tempOutputAmplification - outputAmplification) < 0.01) and
           ((tempOutputAmplification - outputAmplification) > -0.01)) {
         outputAmplification = tempOutputAmplification;
-        if (toneKnobIsMoving) {
+        if (controlState.Knob(Knob::TONE).IsMoving()) {
           toneKnobLedTimer = 0;
         }
         if (toneKnobLedTimer < toneKnobLedOnTime) {
@@ -497,6 +428,7 @@ inline void processButton_GainMode() {
     }
   }
 }
+
 void processButton_ClearMode() {}
 void processButton_FreezeMode() { freeze = hw.tap.Pressed(); }
 
@@ -534,11 +466,15 @@ inline void ProcessButton() {
     if (state.buttonHoldTimer ==
         11 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
       if (buttonMode == ButtonMode::Gain) {
-        state.lockedModDepthValue = params.modDepth;
+
+        // params.modDepth = 0.5 + (state.lockedModDepthValue * 15.5);
         if (state.lockModDepthTo3_125_) {
-          shapeSet = false;
+
           state.lockModDepthTo3_125_ = false;
+          params.modShape = 0.5;
         } else {
+          // contract mod depth slightly towards center
+          params.modDepth = 0.5 + 0.9375 * params.modDepth;
           state.lockModDepthTo3_125_ = true;
         }
       }
@@ -595,54 +531,47 @@ inline float SnappedToUnitInterval(float v) {
 }
 
 void ProcessTimeScale() {
-  params.timeScale = controlState.knob(Knob::TIME_SCALE);
- 
+  params.timeScale = controlState.Knob(Knob::TIME_SCALE).value;
 }
 
-
-void ProcessMix() {
-  params.wet = controlState.knob(Knob::WET);
-}
+void ProcessMix() { params.wet = controlState.Knob(Knob::WET).value; }
 
 void ProcessModSpeed() {
   // Unlike mix, mod speed need not be locked to zero. Mod speed is not
   // succeptible to noise
-  reverb.setTankModSpeed(0.5 + (controlState.knob(Knob::MOD_SPEED) * 100.));
+  params.modSpeed = 0.5 + (controlState.Knob(Knob::MOD_SPEED).value * 100.);
 }
 
 void ProcessModDepth() {
-  params.modDepth = controlState.knob(Knob::MOD_DEPTH);
-
+  float knobValue = controlState.Knob(Knob::MOD_DEPTH).value;
   // Ability to lock mod depth to the equivalent default 3.125% of VCV rack
   if (state.lockModDepthTo3_125_) {
-    reverb.setTankModShape(0.001 + (params.modDepth * 0.998));
-    reverb.setTankModDepth(0.5 + (state.lockedModDepthValue * 15.5));
+    params.modShape = 0.001 + (knobValue * 0.998);
   } else {
-    if (!shapeSet) {
-      reverb.setTankModShape(0.5);
-      shapeSet = true;
-    }
-    reverb.setTankModDepth(params.modDepth * 16.);
+    params.modDepth = knobValue * 16.;
   }
 }
 
 inline void processDecay() {
-  float scaledKnob = 0.0001 + 0.7999 * (1 - controlState.knob(Knob::DECAY));
+  float scaledKnob =
+      0.0001 + 0.7999 * (1 - controlState.Knob(Knob::DECAY).value);
   params.decay = 1 - (scaledKnob * scaledKnob);
-
 }
 void ProcessPreDelay() {
-  params.preDelay = controlState.knob(Knob::PRE_DELAY);
-  
+  params.preDelay = controlState.Knob(Knob::PRE_DELAY).value;
 }
 
-inline void ApplyAllParameters() {
- reverb.setTimeScale(params.timeScale);
-   reverb.setPreDelay(params.preDelay);
+inline void ApplyParameters() {
+  reverb.setTimeScale(params.timeScale);
+  reverb.setPreDelay(params.preDelay);
   reverb.setDecay(params.decay);
+  reverb.setTankModSpeed(params.modSpeed);
+  reverb.setTankModShape(params.modShape);
+  reverb.setTankModDepth(params.modDepth);
+  reverb.freeze(freeze);
 }
 
-inline void ProcessAllParameters() {
+inline void RefreshParameters() {
   ProcessButton();
 
   ProcessTimeScale();
@@ -651,8 +580,6 @@ inline void ProcessAllParameters() {
   ProcessModDepth();
   ProcessPreDelay();
   ProcessSwitches();
-
-  ApplyAllParameters();
 }
 
 // inline void saveCounterAudioRate() {
@@ -897,7 +824,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
   softLimiter(leftOutput, rightOutput);
 }
 
-campestria::PopFilter clearPopFilter;
+PopFilter clearPopFilter;
 
 inline void prepareToClear() {
   if (clear) {
@@ -913,24 +840,29 @@ inline void prepareToClear() {
   }
 }
 
-// unsigned int counter = 0;
-void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
-                   size_t size) {
-  // phase 1: refresh input signals
+void ReadInputs() {
   hw.ProcessAnalogControls();
   hw.tap.Debounce();
-  checkSwitches();
+  ReadSwitches();
+}
+
+// unsigned int counter = 0;
+void AudioCallback(daisy::AudioHandle::InputBuffer x,
+                   daisy::AudioHandle::OutputBuffer out, size_t size) {
+  // phase 1: refresh input signals
+  ReadInputs();
+
+  // phase 2: refresh derived parameters
+  RefreshParameters();
+
+  // phase 3: apply parameters to state
+  ApplyParameters();
+
   prepareLeds(samples.leftInput * minus20dBGain,
               samples.rightInput * minus20dBGain, samples.leftOutput,
               samples.rightOutput);
-
-  // phase 2: refresh derived parameters
-  ProcessAllParameters();
-
-  // phase 3: process all audio samples for the block
+  // phase 4: process all audio samples for the block
   for (size_t i = 0; i < size; i += 1) {
-    reverb.freeze(freeze);
-
     interpolatingDelayHold();
 
     prepareGenericLed();
@@ -960,11 +892,6 @@ void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
 }
 
 void ProcessLEDs() {
-  // If the tone knob is not moving and the mode LEDs are not shining, show
-  // audio IO levels on LEDs
-  if ((gainModeLedCountdown == 0) and (!toneKnobIsMoving)) {
-  }
-
   // allow gain mode countdown to override the LED state
   if (gainModeLedCountdown > 0) {
     const uint32_t gainModeLEDMask = params.GainMode() + 1;
@@ -1007,19 +934,19 @@ void LEDEchoLoop(uint32_t value) {
       hw.SetLed(i, 0, 0, 0);
     }
     hw.UpdateLeds();
-    System::Delay(1000);
+    daisy::System::Delay(1000);
     for (int i = 0; i < 4; i++) {
       hw.SetLed(i, 0, 0, 1);
     }
     hw.UpdateLeds();
-    System::Delay(2000);
+    daisy::System::Delay(2000);
 
     for (int low_bit = 28; low_bit >= 0; low_bit -= 4) {
       for (int i = 0; i < 4; i++) {
         hw.SetLed(i, 0, 0, 0);
       }
       hw.UpdateLeds();
-      System::Delay(1000);
+      daisy::System::Delay(1000);
 
       uint32_t ledFlags = (value >> low_bit) & 0xF;
       if (ledFlags == 0) {
@@ -1033,17 +960,21 @@ void LEDEchoLoop(uint32_t value) {
         hw.SetLed(3, (ledFlags & 1) != 0, 0, 0);
       }
       hw.UpdateLeds();
-      System::Delay(1000);
+      daisy::System::Delay(1000);
     }
   }
 }
+
+} // namespace campestria
+
+using namespace campestria;
 
 int main(void) {
   hw.Init(true);
 
   const int AudioBlockSize = 32;
   hw.SetAudioBlockSize(AudioBlockSize);
-  hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_32KHZ);
+  hw.SetAudioSampleRate(daisy::SaiHandle::Config::SampleRate::SAI_32KHZ);
 
   bogLimiter.init();
 
@@ -1086,7 +1017,7 @@ int main(void) {
   hw.leds[2].Set(0, 1, 0);
   hw.leds[3].Set(0, 0, 1);
   hw.UpdateLeds();
-  System::Delay(500);
+  daisy::System::Delay(500);
   hw.leds[0].Set(0, 0, 0);
   hw.leds[1].Set(0, 0, 0);
   hw.leds[2].Set(0, 0, 0);
@@ -1095,10 +1026,12 @@ int main(void) {
 
   hw.StartAdc();
 
+  controlState.Init(hw.AudioCallbackRate());
+
   hw.StartAudio(AudioCallback);
 
   while (1) {
-    checkSwitches();
+    ReadSwitches();
 
     if (clearPopCancelValue < 1e-30) {
       if (triggerClear) {
