@@ -22,4 +22,21 @@ struct ExponentialRelease {
   }
 };
 
-}
+struct OnePoleFilter {
+  double coeff;
+  double value;
+
+  OnePoleFilter(double slew = 1.0, double initialValue = 0.0)
+      : coeff(slew), value(initialValue) {}
+
+  double process(const double &x) {
+    value += coeff * (x - value);
+    return value;
+  }
+};
+
+struct PopFilter : public OnePoleFilter {
+  PopFilter() : OnePoleFilter(0.01) {}
+};
+
+} // namespace campestria

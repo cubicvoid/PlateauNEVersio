@@ -12,26 +12,6 @@ DaisyVersio hw;
 
 using namespace campestria;
 
-struct OnePoleAudioBlockFilter {
-  double coeff = 1.0;
-  double value = 0.0;
-
-  OnePoleAudioBlockFilter(double slewPerSample) : coeff(slewPerSample) {}
-
-  double process(const double &x) {
-    value += coeff * hw.AudioBlockSize() * (x - value);
-    return value;
-  }
-};
-
-struct ParameterSmoother : public OnePoleAudioBlockFilter {
-  ParameterSmoother() : OnePoleAudioBlockFilter(0.0005) {}
-};
-
-struct PopFilter : public OnePoleAudioBlockFilter {
-  PopFilter() : OnePoleAudioBlockFilter(0.01) {}
-};
-
 // Persistence
 struct Settings {
   int gainMode = 0;
@@ -93,15 +73,6 @@ Parameters params;
 unsigned int gainModeLedCountdown = 0;
 const float gainModeLedDisplayTime = 1.0;
 
-struct Samples {
-  double leftInput = 0.;
-  double rightInput = 0.;
-  double leftOutput = 0.;
-  double rightOutput = 0.;
-};
-
-Samples samples;
-
 struct State {
 
   // input volume modifier is currently unused
@@ -113,6 +84,12 @@ struct State {
   double lockedModDepthValue = 0.;
 
   bool lockModDepthTo3_125_ = false;
+
+  float rmsLeftInput = 0.0f;
+  float rmsRightInput = 0.0f;
+
+  float rmsLeftOutput = 0.0f;
+  float rmsRightOutput = 0.0f;
 };
 
 State state;
@@ -164,19 +141,21 @@ LedTimer ledTimer;
 
 bool freeze = false;
 
-inline void saturation(double &x) {
+inline void saturation(double x, double *xOut) {
   x = x * (27. + x * x) / (27. + 9. * x * x);
 }
 
+inline void saturation(double *x) { saturation(*x, x); }
+
 // Fast hyperbolic tangent function.
-inline void hardLimiter(double &x, double &y, float thresholdDb = -24.0f) {
+inline void hardLimiter(double *x, double *y, float thresholdDb = -24.0f) {
   bogLimiter.engine.thresholdDb = thresholdDb;
-  bogLimiter.processChannel(x, y, x, y);
+  bogLimiter.processChannel(*x, *y, *x, *y);
 }
 
-inline void softLimiter(double &x, double &y) {
-  x = softerLimiterLeft.sample(x);
-  y = softerLimiterRight.sample(y);
+inline void softLimiter(double &x, double &y, double *xOut, double *yOut) {
+  *xOut = softerLimiterLeft.sample(x);
+  *yOut = softerLimiterRight.sample(y);
 }
 
 double hardClipGain = 0.85;
@@ -592,10 +571,12 @@ inline void RefreshParameters() {
 //     }
 // }
 
-// Is mutating the output this way a mortal sin?
-inline void gainControl(double &leftOutput, double &rightOutput) {
-  double saturatedLeft = leftOutput;
-  double saturatedRight = rightOutput;
+inline void GainMode0(double *left, double *right) {}
+
+inline void gainControl(double *left, double *right) {
+
+  double saturatedLeft = *left;
+  double saturatedRight = *right;
   double mix = 1. - ((1. - outputAmplification) * (1. - outputAmplification) *
                      (1. - outputAmplification));
   switch (params.GainMode()) {
@@ -612,39 +593,35 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
     hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    leftOutput = hardClip(leftOutput);
-    rightOutput = hardClip(rightOutput);
-    // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
     double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
                             (1.2 - outputAmplification));
-    leftOutput *= modifier;
-    rightOutput *= modifier;
-
+    *left = modifier * hardClip(*left);
+    *right = modifier * hardClip(*right);
+    // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
   } break;
   case 2: {
     // Same as last but with saturation
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
     hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    leftOutput = hardClip(leftOutput);
-    rightOutput = hardClip(rightOutput);
     double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
                             (1.2 - outputAmplification));
-    leftOutput *= modifier;
-    rightOutput *= modifier;
 
-    saturatedLeft = leftOutput;
-    saturatedRight = rightOutput;
+    double leftClipped = modifier * hardClip(*left);
+    double rightClipped = modifier * hardClip(*right);
+
+    saturatedLeft = leftClipped;
+    saturatedRight = rightClipped;
     saturatedLeft *= 1. + outputAmplification * 20.;
     saturatedRight *= 1. + outputAmplification * 20.;
-    saturation(saturatedLeft);
-    saturation(saturatedRight);
+    saturation(&saturatedLeft);
+    saturation(&saturatedRight);
     saturatedLeft *= 1 - 1.6 * mix + 0.83 * mix * mix;
     saturatedRight *= 1 - 1.6 * mix + 0.83 * mix * mix;
 
-    leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
-    rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    hardLimiter(leftOutput, rightOutput);
+    *left = leftClipped * (1. - mix) + saturatedLeft * mix;
+    *right = rightClipped * (1. - mix) + saturatedRight * mix;
+    hardLimiter(left, right);
 
   } break;
   case 3: {
@@ -652,69 +629,67 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     // output dynamic setting
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    saturatedLeft = leftOutput;
-    saturatedRight = rightOutput;
+    saturatedLeft = *left;
+    saturatedRight = *right;
     saturatedLeft *= 1. + outputAmplification * 20.;
     saturatedRight *= 1. + outputAmplification * 20.;
-    saturation(saturatedLeft);
-    saturation(saturatedRight);
+    saturation(&saturatedLeft);
+    saturation(&saturatedRight);
     saturatedLeft *= 1 - 1.6 * mix + 0.83 * mix * mix;
     saturatedRight *= 1 - 1.6 * mix + 0.83 * mix * mix;
     // saturatedLeft *= 1. + mix * mix * mix * mix;
     // saturatedRight *= 1. + mix * mix * mix * mix;
-    leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
-    rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    hardLimiter(leftOutput, rightOutput);
+    *left = *left * (1. - mix) + saturatedLeft * mix;
+    *right = *right * (1. - mix) + saturatedRight * mix;
+    hardLimiter(left, right);
 
   } break;
   case 4: {
     // Bogaudio LMTR then stock VCV clip
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardLimiter(leftOutput, rightOutput);
+    hardLimiter(left, right);
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
     hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    leftOutput = hardClip(leftOutput);
-    rightOutput = hardClip(rightOutput);
+    *left = hardClip(*left);
+    *right = hardClip(*right);
     // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
     double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
                             (1.2 - outputAmplification));
-    leftOutput *= modifier;
-    rightOutput *= modifier;
+    *left *= modifier;
+    *right *= modifier;
 
   } break;
   case 5: {
     // Stock VCV clip then Bogaudio LMTR
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    leftOutput = hardClip(leftOutput);
-    rightOutput = hardClip(rightOutput);
+    *left = hardClip(*left);
+    *right = hardClip(*right);
     // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
     double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
                             (1.2 - outputAmplification));
-    leftOutput *= modifier;
-    rightOutput *= modifier;
-    hardLimiter(leftOutput, rightOutput);
+    *left *= modifier;
+    *right *= modifier;
+    hardLimiter(left, right);
 
   } break;
   case 6: {
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
     // Foldback distortion. Full wave rectifier that folds back on itself
-    campestria::foldbackDistortion(leftOutput, 1. - outputAmplification);
-    campestria::foldbackDistortion(rightOutput, 1. - outputAmplification);
-    hardLimiter(leftOutput, rightOutput);
+    campestria::foldbackDistortion(*left, 1. - outputAmplification);
+    campestria::foldbackDistortion(*right, 1. - outputAmplification);
+    hardLimiter(left, right);
 
   } break;
   case 7: {
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    saturatedLeft = leftOutput;
-    saturatedRight = rightOutput;
+    saturatedLeft = *left;
+    saturatedRight = *right;
     // Output to zero once past threshold. Simulates ripped speaker
     rippedSpeakerLeft(saturatedLeft,
                       (2. + 2. * outputAmplification * outputAmplification -
@@ -726,17 +701,17 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     if (mix > 1.) {
       mix = 1.;
     }
-    leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
-    rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    hardLimiter(leftOutput, rightOutput);
+    *left = *left * (1. - mix) + saturatedLeft * mix;
+    *left = *right * (1. - mix) + saturatedRight * mix;
+    hardLimiter(left, right);
 
   } break;
   case 8: {
     // Same as last but saturation before ripped speaker
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    saturatedLeft = leftOutput;
-    saturatedRight = rightOutput;
+    saturatedLeft = *left;
+    saturatedRight = *right;
     rippedSpeakerLeft(saturatedLeft,
                       (2. + 2. * outputAmplification * outputAmplification -
                        4. * outputAmplification));
@@ -745,17 +720,17 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
                         4. * outputAmplification));
     saturatedLeft *= 1. + outputAmplification * 15.;
     saturatedRight *= 1. + outputAmplification * 15.;
-    saturation(saturatedLeft);
-    saturation(saturatedRight);
+    saturation(&saturatedLeft);
+    saturation(&saturatedRight);
     saturatedLeft *= 1 - 1.6 * mix + 0.83 * mix * mix;
     saturatedRight *= 1 - 1.6 * mix + 0.83 * mix * mix;
     mix *= 2;
     if (mix > 1.) {
       mix = 1.;
     }
-    leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
-    rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    hardLimiter(leftOutput, rightOutput);
+    *left = *left * (1. - mix) + saturatedLeft * mix;
+    *right = *right * (1. - mix) + saturatedRight * mix;
+    hardLimiter(left, right);
 
   } break;
   case 9: {
@@ -764,15 +739,15 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     softerLimiterRight.limit = 0.85;
     hardClipGain =
         (1. - outputAmplification) * (1. - outputAmplification) + 0.1;
-    leftOutput = hardClip(leftOutput);
-    rightOutput = hardClip(rightOutput);
+    *left = hardClip(*left);
+    *right = hardClip(*right);
     double modifier = 1. + ((1. / (hardClipGain - 0.1 + 0.000000001)) *
                             (1.2 - outputAmplification));
-    leftOutput *= modifier;
-    rightOutput *= modifier;
+    *left *= modifier;
+    *right *= modifier;
 
-    saturatedLeft = leftOutput;
-    saturatedRight = rightOutput;
+    saturatedLeft = *left;
+    saturatedRight = *right;
 
     rippedSpeakerLeft(saturatedLeft,
                       (2. + 2. * outputAmplification * outputAmplification -
@@ -782,28 +757,26 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
                         4. * outputAmplification));
     saturatedLeft *= 1. + outputAmplification * 15.;
     saturatedRight *= 1. + outputAmplification * 15.;
-    saturation(saturatedLeft);
-    saturation(saturatedRight);
+    saturation(&saturatedLeft);
+    saturation(&saturatedRight);
     saturatedLeft *= 1 - 1.6 * mix + 0.83 * mix * mix;
     saturatedRight *= 1 - 1.6 * mix + 0.83 * mix * mix;
 
-    mix *= 2;
-    if (mix > 1.) {
-      mix = 1.;
-    }
-    leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
-    rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
+    mix = std::min(mix * 2, 1.0);
 
-    hardLimiter(leftOutput, rightOutput);
+    *left = *left * (1. - mix) + saturatedLeft * mix;
+    *right = *right * (1. - mix) + saturatedRight * mix;
+
+    hardLimiter(left, right);
 
   } break;
   case 10: {
     // Last one is Bogaudio LMTR followed by the ripped speaker
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardLimiter(leftOutput, rightOutput, -30.0f);
-    saturatedLeft = leftOutput;
-    saturatedRight = rightOutput;
+    hardLimiter(left, left, -30.0f);
+    saturatedLeft = *left;
+    saturatedRight = *left;
     rippedSpeakerLeft(saturatedLeft,
                       (2. + 2. * outputAmplification * outputAmplification -
                        4. * outputAmplification));
@@ -814,14 +787,15 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     if (mix > 1.) {
       mix = 1.;
     }
-    leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
-    rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
+    *left = *left * (1. - mix) + saturatedLeft * mix;
+    *right = *right * (1. - mix) + saturatedRight * mix;
   } break;
   case 11: {
     params.SetGainMode(0);
   } break;
   }
-  softLimiter(leftOutput, rightOutput);
+
+  softLimiter(*left, *right, left, right);
 }
 
 PopFilter clearPopFilter;
@@ -846,52 +820,13 @@ void ReadInputs() {
   ReadSwitches();
 }
 
-// unsigned int counter = 0;
-void AudioCallback(daisy::AudioHandle::InputBuffer x,
-                   daisy::AudioHandle::OutputBuffer out, size_t size) {
-  // phase 1: refresh input signals
-  ReadInputs();
-
-  // phase 2: refresh derived parameters
-  RefreshParameters();
-
-  // phase 3: apply parameters to state
-  ApplyParameters();
-
-  prepareLeds(samples.leftInput * minus20dBGain,
-              samples.rightInput * minus20dBGain, samples.leftOutput,
-              samples.rightOutput);
-  // phase 4: process all audio samples for the block
-  for (size_t i = 0; i < size; i += 1) {
-    interpolatingDelayHold();
-
-    prepareGenericLed();
-
-    prepareToClear();
-
-    samples.leftInput = campestria::hardLimit100_(x[0][i]) * 10.;
-    samples.rightInput = campestria::hardLimit100_(x[1][i]) * 10.;
-
-    reverb.process(samples.leftInput * minus18dBGain * minus20dBGain *
-                       (1.0 + inputAmplification * 7.) * clearPopCancelValue,
-                   samples.rightInput * minus18dBGain * minus20dBGain *
-                       (1.0 + inputAmplification * 7.) * clearPopCancelValue);
-
-    samples.leftOutput =
-        ((samples.leftInput * (1.0f - params.wet) * 0.1) +
-         (reverb.getLeftOutput() * params.wet * clearPopCancelValue));
-    samples.rightOutput =
-        ((samples.rightInput * (1.0f - params.wet) * 0.1) +
-         (reverb.getRightOutput() * params.wet * clearPopCancelValue));
-
-    gainControl(samples.leftOutput, samples.rightOutput);
-
-    out[0][i] = samples.leftOutput;
-    out[1][i] = samples.rightOutput;
-  }
-}
-
 void ProcessLEDs() {
+
+  prepareLeds(state.rmsLeftInput, state.rmsRightInput, state.rmsLeftOutput,
+              state.rmsRightInput);
+
+  prepareGenericLed();
+
   // allow gain mode countdown to override the LED state
   if (gainModeLedCountdown > 0) {
     const uint32_t gainModeLEDMask = params.GainMode() + 1;
@@ -907,8 +842,63 @@ void ProcessLEDs() {
   hw.UpdateLeds();
 }
 
-uint32_t testValue = 0;
-double maxLoad = 0.;
+// unsigned int counter = 0;
+void AudioCallback(daisy::AudioHandle::InputBuffer x,
+                   daisy::AudioHandle::OutputBuffer out, size_t size) {
+  // phase 1: refresh input signals
+  ReadInputs();
+
+  // phase 2: refresh derived parameters
+  RefreshParameters();
+
+  // phase 3: apply parameters to state
+  ApplyParameters();
+
+  float leftInputsSquared = 0.0f;
+  float rightInputsSquared = 0.0f;
+  float leftOutputsSquared = 0.0f;
+  float rightOutputsSquared = 0.0f;
+  // phase 4: process all audio samples for the block
+  for (size_t i = 0; i < size; i += 1) {
+    const float leftInputRaw = x[0][i];
+    const float rightInputRaw = x[1][i];
+    leftInputsSquared += leftInputRaw * leftInputRaw;
+    rightInputsSquared += rightInputRaw * rightInputRaw;
+    // aren't samples already guaranteed to have absolute value at most 1?
+    double leftSample = campestria::hardLimit100_(leftInputRaw) * 10.;
+    double rightSample = campestria::hardLimit100_(rightInputRaw) * 10.;
+
+    interpolatingDelayHold();
+
+    prepareToClear();
+
+    reverb.process(leftSample * minus18dBGain * minus20dBGain *
+                       (1.0 + inputAmplification * 7.) * clearPopCancelValue,
+                   rightSample * minus18dBGain * minus20dBGain *
+                       (1.0 + inputAmplification * 7.) * clearPopCancelValue);
+
+    double leftOutput =
+        ((leftSample * (1.0f - params.wet) * 0.1) +
+         (reverb.getLeftOutput() * params.wet * clearPopCancelValue));
+    double rightOutput =
+        ((rightSample * (1.0f - params.wet) * 0.1) +
+         (reverb.getRightOutput() * params.wet * clearPopCancelValue));
+
+    gainControl(&leftOutput, &rightOutput);
+
+    out[0][i] = leftOutput;
+    out[1][i] = rightOutput;
+    leftOutputsSquared += leftOutput * leftOutput;
+    rightOutputsSquared += rightOutput * rightOutput;
+  }
+  state.rmsLeftInput = sqrtf(leftInputsSquared / size);
+  state.rmsRightInput = sqrtf(rightInputsSquared / size);
+  state.rmsLeftOutput = sqrtf(leftOutputsSquared / size);
+  state.rmsRightOutput = sqrtf(rightOutputsSquared / size);
+
+  // phase 5: display LED state for this block
+  ProcessLEDs();
+}
 
 void SetReverbDefaults() {
   reverb.setSampleRate(hw.AudioSampleRate());
@@ -926,43 +916,6 @@ void SetReverbDefaults() {
   reverb.setTankModSpeed(1.0);
   reverb.setTankModDepth(0.5);
   reverb.setTankModShape(0.5);
-}
-
-void LEDEchoLoop(uint32_t value) {
-  while (true) {
-    for (int i = 0; i < 4; i++) {
-      hw.SetLed(i, 0, 0, 0);
-    }
-    hw.UpdateLeds();
-    daisy::System::Delay(1000);
-    for (int i = 0; i < 4; i++) {
-      hw.SetLed(i, 0, 0, 1);
-    }
-    hw.UpdateLeds();
-    daisy::System::Delay(2000);
-
-    for (int low_bit = 28; low_bit >= 0; low_bit -= 4) {
-      for (int i = 0; i < 4; i++) {
-        hw.SetLed(i, 0, 0, 0);
-      }
-      hw.UpdateLeds();
-      daisy::System::Delay(1000);
-
-      uint32_t ledFlags = (value >> low_bit) & 0xF;
-      if (ledFlags == 0) {
-        for (int i = 0; i < 4; i++) {
-          hw.SetLed(i, 1, 1, 1);
-        }
-      } else {
-        hw.SetLed(0, (ledFlags & 8) != 0, 0, 0);
-        hw.SetLed(1, (ledFlags & 4) != 0, 0, 0);
-        hw.SetLed(2, (ledFlags & 2) != 0, 0, 0);
-        hw.SetLed(3, (ledFlags & 1) != 0, 0, 0);
-      }
-      hw.UpdateLeds();
-      daisy::System::Delay(1000);
-    }
-  }
 }
 
 } // namespace campestria
