@@ -12,6 +12,30 @@ using namespace daisysp;
 
 DaisyVersio hw;
 
+namespace campestria {
+
+struct OnePoleAudioBlockFilter {
+  double coeff = 1.0;
+  double value = 0.0;
+
+  OnePoleAudioBlockFilter(double slewPerSample) : coeff(slewPerSample) {}
+
+  double process(const double &x) {
+    value += coeff * hw.AudioBlockSize() * (x - value);
+    return value;
+  }
+};
+
+struct ParameterSmoother : public OnePoleAudioBlockFilter {
+  ParameterSmoother() : OnePoleAudioBlockFilter(0.0005) {}
+};
+
+struct PopFilter : public OnePoleAudioBlockFilter {
+  PopFilter() : OnePoleAudioBlockFilter(0.01) {}
+};
+
+} // namespace campestria
+
 // Persistence
 struct Settings {
   int gainMode = 0;
@@ -37,7 +61,6 @@ struct Parameters {
   double dry = 0.5;
 
   double decay = 0.877465;
-  double timeScale = 0.f;
 
   double diffusion = 1.;
   double tempDiffusion = 1.;
@@ -54,6 +77,8 @@ struct Parameters {
   double previousReverbDampLow = 0.;
   double previousReverbDampHigh = 0.;
 
+  double modDepthValue = 0.;
+
   uint32_t GainMode() { return storage.GetSettings().gainMode; }
   void SetGainMode(uint32_t mode) {
     storage.GetSettings().gainMode = mode;
@@ -63,8 +88,8 @@ struct Parameters {
 
 Parameters params;
 
-unsigned int gainModeLedTimer = 32001;
-const unsigned int gainModeLedOnTime = 32000;
+unsigned int gainModeLedCountdown = 0;
+const float gainModeLedDisplayTime = 1.0;
 
 struct Samples {
   double leftInput = 0.;
@@ -82,6 +107,12 @@ struct State {
   // double tempInputVolumeModifier = 1.;
   unsigned int buttonHoldTimer = 0;
   unsigned int buttonOffTimer = 0;
+
+  double lockedModDepthValue = 0.;
+  double previousModDepthKnobValue = 0.;
+  bool modDepthKnobIsMoving = false;
+
+  bool lockModDepthTo3_125_ = false;
 };
 
 State state;
@@ -105,22 +136,10 @@ ButtonMode buttonMode = ButtonMode::Gain;
 unsigned int toneKnobLedTimer = 32001;
 const unsigned int toneKnobLedOnTime = 32000;
 bool toneKnobIsMoving = false;
-double toneKnobValue = 0.;
-double previousToneKnobValue = 0.;
 double toneKnobZeroLockValue = 0.;
 double previousToneKnobZeroLockValue = 0.;
 
-double previousModDepthKnobValue = 0.;
-bool modDepthKnobIsMoving = false;
-
-bool lockModDepthTo3_125_ = false;
-
 bool leds = true;
-
-auto *LED0PtrRed = &hw.leds[0].r_;
-auto *LED1PtrRed = &hw.leds[1].r_;
-auto *LED2PtrRed = &hw.leds[2].r_;
-auto *LED3PtrRed = &hw.leds[3].r_;
 
 Dattorro reverb(32000, 16, 4.0);
 
@@ -129,33 +148,15 @@ bool diffusionEnabled = true;
 double preDelay = 0.;
 double previousPreDelay = 0.;
 
-auto *SWITCH0Ptr = &hw.sw[0];
-auto *SWITCH1Ptr = &hw.sw[1];
-
-auto *KNOB0Ptr = &hw.knobs[0];
-auto *KNOB1Ptr = &hw.knobs[1];
-auto *KNOB2Ptr = &hw.knobs[2];
-auto *KNOB3Ptr = &hw.knobs[3];
-auto *KNOB4Ptr = &hw.knobs[4];
-auto *KNOB5Ptr = &hw.knobs[5];
-auto *KNOB6Ptr = &hw.knobs[6];
-
 double outputAmplification = 0.0;
 double tempOutputAmplification = outputAmplification;
 
 double inputAmplification = 0.0;
 double tempInputAmplification = inputAmplification;
 
-double modDepthValue = 0.;
-double lockedModDepthValue = 0.;
-
 enum class SwitchState { Left, Center, Right };
 
 struct ControlState {
-  double led1 = 0.;
-  double led2 = 0.;
-  double led3 = 0.;
-  double led4 = 0.;
 
   SwitchState topSwitch = SwitchState::Left;
   SwitchState bottomSwitch = SwitchState::Right;
@@ -175,8 +176,9 @@ unsigned int lockModDepthTime = 320000;
 unsigned int bufferClearTriggerWindow = 32000;
 
 struct LedTimer {
-  unsigned int genericLedOnTime = 32000;
-  unsigned int genericLedTimer = 32001;
+  // unsigned int genericLedOnTime = 32000;
+  unsigned int genericLedCountdown = 0;
+  const unsigned int genericLedTimeout = 32001;
 };
 
 LedTimer ledTimer;
@@ -255,76 +257,63 @@ inline void rippedSpeakerRight(double &x, double threshold) {
   x *= rightGateFilter.processLowpass(rightValue);
 }
 
-campestria::KnobOnePoleFilter mixKnobLPF;
-campestria::KnobOnePoleFilter modDepthKnobLPF;
-campestria::KnobOnePoleFilter preDelayKnobLPF;
-campestria::KnobOnePoleFilter timeScaleKnobLPF;
-campestria::KnobOnePoleFilter toneKnobLPF;
-campestria::KnobOnePoleFilter toneKnobZeroLockLPF;
-campestria::KnobOnePoleFilter decayKnobLPF;
-
-inline void checkIfToneKnobIsMoving(double currentValue) {
-  if (((currentValue - previousToneKnobValue) > 0.001) or
-      ((currentValue - previousToneKnobValue) < -0.001)) {
-    previousToneKnobValue = currentValue;
-    toneKnobIsMoving = true;
-  } else {
-    toneKnobIsMoving = false;
-  }
-}
+// campestria::KnobOnePoleFilter knobLPF[DaisyVersio::LED_LAST];
+//  campestria::KnobOnePoleFilter mixKnobLPF;
+//  campestria::KnobOnePoleFilter modDepthKnobLPF;
+//  campestria::KnobOnePoleFilter preDelayKnobLPF;
+//  campestria::KnobOnePoleFilter timeScaleLPF;
+//  campestria::KnobOnePoleFilter toneKnobLPF;
+//  campestria::KnobOnePoleFilter toneKnobZeroLockLPF;
+//  campestria::KnobOnePoleFilter decayKnobLPF;
 
 inline void checkIfModDepthKnobIsMoving(double currentValue) {
-  if (((currentValue - previousModDepthKnobValue) > 0.001) or
-      ((currentValue - previousModDepthKnobValue) < -0.001)) {
-    previousModDepthKnobValue = currentValue;
-    modDepthKnobIsMoving = true;
+  if (((currentValue - state.previousModDepthKnobValue) > 0.001) or
+      ((currentValue - state.previousModDepthKnobValue) < -0.001)) {
+    state.previousModDepthKnobValue = currentValue;
+    state.modDepthKnobIsMoving = true;
   } else {
-    modDepthKnobIsMoving = false;
+    state.modDepthKnobIsMoving = false;
   }
 }
 
 // These pointers are necessary to speed up the code, otherwise severe crackling
 // occurs.
-inline void setAndUpdateGainLeds(const double &w, const double &x,
-                                 const double &y, const double &z) {
+inline void setLEDs(const double &w, const double &x, const double &y,
+                    const double &z, bool update = false) {
   hw.SetLed(0, w, 0.0f, 0.0f);
   hw.SetLed(1, x, 0.0f, 0.0f);
   hw.SetLed(2, y, 0.0f, 0.0f);
   hw.SetLed(3, z, 0.0f, 0.0f);
-  hw.UpdateLeds();
+  if (update) {
+    hw.UpdateLeds();
+  }
 }
 
 inline void prepareLeds(const double &w, const double &x, const double &y,
                         const double &z) {
-  controlState.led1 = w;
-  controlState.led2 = x;
-  controlState.led3 = y;
-  controlState.led4 = z;
+  hw.SetLed(0, w, 0.0f, 0.0f);
+  hw.SetLed(1, x, 0.0f, 0.0f);
+  hw.SetLed(2, y, 0.0f, 0.0f);
+  hw.SetLed(3, z, 0.0f, 0.0f);
 }
 
 inline void prepareGenericLed() {
-  if (ledTimer.genericLedTimer < ledTimer.genericLedOnTime) {
-    ++ledTimer.genericLedTimer;
-    prepareLeds(1., 1., 1., 1.);
-  } else if (ledTimer.genericLedTimer == ledTimer.genericLedOnTime) {
-    ledTimer.genericLedTimer = ledTimer.genericLedOnTime + 1;
-    prepareLeds(0., 0., 0., 0.);
+  if (ledTimer.genericLedCountdown > 0) {
+    float x = (--ledTimer.genericLedCountdown > 0);
+    prepareLeds(x, x, x, x);
   }
 }
-
-inline void checkButton() { hw.tap.Debounce(); }
 
 bool gateState = false;
 inline void checkGate() { gateState = !hw.gate.State(); }
 
 inline void checkSwitches() {
-  controlState.topSwitch =
-      static_cast<SwitchState>(hw.sw[DaisyVersio::SW_0].Read());
-  controlState.bottomSwitch =
-      static_cast<SwitchState>(hw.sw[DaisyVersio::SW_1].Read());
+  controlState.topSwitch = static_cast<SwitchState>(hw.sw[0].Read());
+  controlState.bottomSwitch = static_cast<SwitchState>(hw.sw[1].Read());
 }
 
-inline void processSwitches() {
+inline void ProcessSwitches() {
+
   if (controlState.topSwitch == SwitchState::Right) {
     if (controlState.bottomSwitch == SwitchState::Center) {
       params.inputDampHigh = toneKnobZeroLockValue;
@@ -473,49 +462,62 @@ inline void processSwitches() {
   }
 }
 
-template <ButtonMode M> void processButton();
-
-template <> void processButton<ButtonMode::Gain>() {}
-template <> void processButton<ButtonMode::Clear>() {}
-template <> void processButton<ButtonMode::Freeze>() {}
+inline void processButton_GainMode() {
+  if (hw.tap.Pressed()) {
+    if (state.buttonHoldTimer < 5 * 160000) {
+      gainModeLedCountdown = gainModeLedDisplayTime * hw.AudioCallbackRate();
+    }
+  }
+}
+void processButton_ClearMode() {}
+void processButton_FreezeMode() { freeze = hw.tap.Pressed(); }
 
 // Button has three modes, gain control, buffer clear, freeze.
 // Hold down the button for 10 seconds, when the LEDs come on
-// press again within one second to confirm mode change. If x gain control mode
-// not confirming will lock mod depth to 3.125%. In buffer clear
-// mode, a rising edge will trigger the buffers to clear.
-// In freeze mode, holding the button will freeze the buffers.
-inline void processButton() {
+// press again within one second to confirm mode change. If x gain control
+// mode not confirming will lock mod depth to 3.125%. In buffer clear mode, a
+// rising edge will trigger the buffers to clear. In freeze mode, holding the
+// button will freeze the buffers.
+inline void ProcessButton() {
+
   if (hw.tap.Pressed()) {
-    if (buttonMode == ButtonMode::Gain) {
-      if (state.buttonHoldTimer < 160000) {
-        gainModeLedTimer = 0;
-      }
+    state.buttonHoldTimer++;
+  } else {
+    state.buttonHoldTimer = 0;
+  }
+
+  switch (buttonMode) {
+  case ButtonMode::Gain:
+    processButton_GainMode();
+    break;
+  case ButtonMode::Clear:
+    processButton_ClearMode();
+    break;
+  case ButtonMode::Freeze:
+    processButton_FreezeMode();
+    break;
+  }
+  if (hw.SwitchPressed()) {
+    ++state.buttonHoldTimer;
+    if (state.buttonHoldTimer ==
+        10 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
+      ledTimer.genericLedCountdown = ledTimer.genericLedTimeout;
     }
-    if (state.buttonHoldTimer == 320000) {
-      ++state.buttonHoldTimer;
-      ledTimer.genericLedTimer = 0;
-    }
-    if (state.buttonHoldTimer == 352001) {
-      ++state.buttonHoldTimer;
+    if (state.buttonHoldTimer ==
+        11 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
       if (buttonMode == ButtonMode::Gain) {
-        lockedModDepthValue = modDepthValue;
-        if (lockModDepthTo3_125_) {
+        state.lockedModDepthValue = params.modDepthValue;
+        if (state.lockModDepthTo3_125_) {
           shapeSet = false;
-          lockModDepthTo3_125_ = false;
+          state.lockModDepthTo3_125_ = false;
         } else {
-          lockModDepthTo3_125_ = true;
+          state.lockModDepthTo3_125_ = true;
         }
       }
     }
-    if (buttonMode == ButtonMode::Freeze) {
-      freeze = true;
-    } else {
-      freeze = false;
-    }
     if (hw.tap.RisingEdge()) {
       if (confirmationSequence) {
-        if (ledTimer.genericLedTimer < ledTimer.genericLedOnTime) {
+        if (ledTimer.genericLedCountdown > 0) {
           if (buttonMode == ButtonMode::Freeze) {
             buttonMode = ButtonMode::Gain;
             // saveData();
@@ -531,33 +533,26 @@ inline void processButton() {
         }
       }
       if (buttonMode == ButtonMode::Clear) {
-        ledTimer.genericLedTimer = 0;
+        ledTimer.genericLedCountdown = ledTimer.genericLedTimeout;
         clear = true;
       }
     }
   } else {
-    if (buttonMode == ButtonMode::Freeze) {
-      freeze = false;
-    }
+
     if (hw.tap.FallingEdge()) {
-      if ((state.buttonHoldTimer > 320000) and
-          (state.buttonHoldTimer < 352000)) {
+      if ((state.buttonHoldTimer > 10 * hw.AudioCallbackRate()) and
+          (state.buttonHoldTimer < 11 * hw.AudioCallbackRate())) {
         confirmationSequence = true;
       }
       if (buttonMode == ButtonMode::Gain) {
-        if (state.buttonHoldTimer < 8000) {
-          gainModeLedTimer = 0;
+        if (state.buttonHoldTimer < 0.25f * hw.AudioCallbackRate()) {
+          gainModeLedCountdown =
+              gainModeLedDisplayTime * hw.AudioCallbackRate();
           params.SetGainMode(params.GainMode() + 1);
         }
       }
     }
     state.buttonHoldTimer = 0;
-  }
-}
-
-inline void incrementButtonHoldCounter(int count) {
-  if (hw.tap.Pressed()) {
-    state.buttonHoldTimer += count;
   }
 }
 
@@ -567,112 +562,114 @@ inline void interpolatingDelayHold() {
   else
     hold = 1.;
 }
+inline float SnappedToUnitInterval(float v) {
+  return (v < 0.01f) ? 0.0f : (v > 0.99) ? 1.0f : (v - 0.01f) / 0.98f;
+}
 
-inline void processAllParameters() {
+void ProcessTimeScale() {
+  static campestria::ParameterSmoother timeScaleSmoother;
+  // Time scale is very succeptible to noise. Smoothly locks to zero
+  const float knobValue = SnappedToUnitInterval(hw.GetKnobValue(5));
 
-  // Putting this here for larger audio block sizes.
-  // Quick knob update times means less noise
-  hw.ProcessAnalogControls();
+  const float timeScaleRaw = 0.01f + (knobValue * knobValue * 3.99f);
+  const float timeScaleSmoothed = timeScaleSmoother.process(timeScaleRaw);
+  reverb.setTimeScale(timeScaleSmoothed);
+}
 
-  // If the tone knob is not moving and the mode LEDs are not shining, show
-  // audio IO levels on LEDs
-  if ((gainModeLedTimer > gainModeLedOnTime) and (!toneKnobIsMoving)) {
-    prepareLeds(samples.leftInput * minus20dBGain,
-                samples.rightInput * minus20dBGain, samples.leftOutput,
-                samples.rightOutput);
-  }
-
+void ProcessTone() {
+  static campestria::ParameterSmoother toneSmoother;
+  static campestria::ParameterSmoother toneZeroLockSmoother;
   // Tone knob parameters smoothly lock to 0 to avoid any clicking when
   // disabling diffusion and unwanted low/high cuts
-  toneKnobValue = toneKnobLPF.processLowpass(hw.GetKnobValue(2));
-  checkIfToneKnobIsMoving(toneKnobValue);
-  toneKnobZeroLockValue = toneKnobZeroLockLPF.processLowpass(
+  float previousValue = toneSmoother.value;
+  float toneKnobValue = toneSmoother.process(hw.GetKnobValue(2));
+  toneKnobIsMoving = fabs(toneKnobValue - previousValue);
+  toneKnobZeroLockValue = toneZeroLockSmoother.process(
       (hw.GetKnobValue(2) >= 0.01) * hw.GetKnobValue(2));
   if (toneKnobZeroLockValue < 1.0e-030) {
     toneKnobZeroLockValue = 0.;
   }
+}
 
-  // Mix knob locks to zero and one. Mix knob is very susceptible to noise along
-  // with pre-delay, mod depth, and time scale These knobs are thus ran through
-  // one pole LPFs. It is important these 1 pole LPFs are evaluated at audio
-  // rate.
-  params.wet = mixKnobLPF.processLowpass((hw.GetKnobValue(0) > 0.99) * 1. +
-                                         (hw.GetKnobValue(0) >= 0.01) *
-                                             hw.GetKnobValue(0) *
-                                             (hw.GetKnobValue(0) <= 0.99));
+void ProcessMix() {
+  // Mix knob locks to zero and one. Mix knob is very susceptible to noise
+  // along with pre-delay, mod depth, and time scale These knobs are thus ran
+  // through one pole LPFs. It is important these 1 pole LPFs are evaluated at
+  // audio rate.
+  static campestria::ParameterSmoother mixSmoother;
+  float rawValue = SnappedToUnitInterval(hw.GetKnobValue(0));
+  params.wet = mixSmoother.process(rawValue);
   params.dry = 1. - params.wet;
+}
 
-  // // As with mix, mod speed need not be locked to zero. Mod speed is not
+void ProcessModSpeed() {
+  // Unlike mix, mod speed need not be locked to zero. Mod speed is not
   // succeptible to noise
   reverb.setTankModSpeed(0.5 + (hw.GetKnobValue(1) * 100.));
+}
 
+void ProcessModDepth() {
+  static campestria::ParameterSmoother modDepthSmoother;
   // Mod depth value also smoothly locks to zero to avoid any clicking
-  modDepthValue = modDepthKnobLPF.processLowpass((hw.GetKnobValue(3) >= 0.01) *
-                                                 hw.GetKnobValue(3));
-  if (modDepthValue < 1.0e-030) {
-    modDepthValue = 0.;
+  float rawValue = (hw.GetKnobValue(3) >= 0.01) * hw.GetKnobValue(3);
+
+  modDepthSmoother.process(rawValue);
+  if (modDepthSmoother.value < 1.0e-030) {
+    modDepthSmoother.value = 0.;
   }
+  params.modDepthValue = modDepthSmoother.value;
 
   // Ability to lock mod depth to the equivalent default 3.125% of VCV rack
-  if (lockModDepthTo3_125_) {
-    reverb.setTankModShape(0.001 + (modDepthValue * 0.998));
-    reverb.setTankModDepth(0.5 + (lockedModDepthValue * 15.5));
+  if (state.lockModDepthTo3_125_) {
+    reverb.setTankModShape(0.001 + (params.modDepthValue * 0.998));
+    reverb.setTankModDepth(0.5 + (state.lockedModDepthValue * 15.5));
   } else {
     if (!shapeSet) {
       reverb.setTankModShape(0.5);
       shapeSet = true;
     }
-    reverb.setTankModDepth(modDepthValue * 16.);
+    reverb.setTankModDepth(params.modDepthValue * 16.);
   }
+}
 
-  // The decay setting is not succeptible to noise. Exact scaling as x VCV rack.
-  // In order for the freeze parameter to not cause any noise, a low pass filter
-  // must be applied to the decay param to smoothly move from 100% decay to
-  // whatever value is present on the knob.
-  if (hw.GetKnobValue(4) < 0.01) {
-    params.decay = 0.;
-  } else if (hw.GetKnobValue(4) > 0.99) {
-    params.decay = 1.;
-  } else {
-    params.decay = hw.GetKnobValue(4);
-  }
-  if (freeze) {
-    params.decay = 1.;
-  }
-  params.decay = 0.1 + (params.decay * 0.7999);
-  params.decay = params.decay + 0.1;
-  params.decay = 1 - params.decay;
-  params.decay = 1 - (params.decay * params.decay);
-  params.decay = decayKnobLPF.processLowpass(params.decay);
+inline void processDecay() {
+  // The decay setting is not succeptible to noise. Exact scaling as x VCV
+  // rack. In order for the freeze parameter to not cause any noise, a low
+  // pass filter must be applied to the decay param to smoothly move from 100%
+  // decay to whatever value is present on the knob.
+  const float decayKnob =
+      freeze ? 1.0f : SnappedToUnitInterval(hw.GetKnobValue(4));
+  // params.decay = 0.2 + (params.decay * 0.7999);
+
+  // params.decay = 1 - params.decay;
+  static campestria::ParameterSmoother decaySmoother;
+  float scaledDecay = 0.0001 + 0.7999 * (1 - decayKnob);
+  params.decay = decaySmoother.process(1 - (scaledDecay * scaledDecay));
   reverb.setDecay(params.decay);
-
-  // Time scale is very succeptible to noise. Smoothly locks to zero
-  if (hw.GetKnobValue(5) < 0.01) {
-    params.timeScale = 0.;
-  } else if (hw.GetKnobValue(5) > 0.99) {
-    params.timeScale = 1.;
-  } else {
-    params.timeScale = hw.GetKnobValue(5);
-  }
-  params.timeScale = params.timeScale * params.timeScale;
-  params.timeScale = 0.0025 + (params.timeScale * 0.9975);
-  params.timeScale = timeScaleKnobLPF.processLowpass(params.timeScale) * 4.;
-  reverb.setTimeScale(params.timeScale);
-
+}
+void ProcessPreDelay() {
   // // Pre-delay knob is smoothly locked to zero and out of all controls is
   // most succeptible to noise
-  preDelay = preDelayKnobLPF.processLowpass((hw.GetKnobValue(6) >= 0.01) *
-                                            hw.GetKnobValue(6)) *
+  static campestria::ParameterSmoother preDelaySmoother;
+  preDelay = preDelaySmoother.process((hw.GetKnobValue(6) >= 0.01) *
+                                      hw.GetKnobValue(6)) *
              4.;
   if (preDelay < 1.0e-030) {
     preDelay = 0.;
   }
   reverb.setPreDelay(preDelay);
-
-  processSwitches();
 }
 
-template <typename T> class Stereo {};
+inline void ProcessAllParameters() {
+  ProcessButton();
+  ProcessTone();
+  ProcessTimeScale();
+  ProcessMix();
+  ProcessModSpeed();
+  ProcessModDepth();
+  ProcessPreDelay();
+  ProcessSwitches();
+}
 
 // inline void saveCounterAudioRate() {
 //     if(saveTimer < saveTime) {
@@ -692,17 +689,10 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
                      (1. - outputAmplification));
   switch (params.GainMode()) {
   case 0: {
-    // Regular soft limiter. Rarely clips. Lower limit threshold by turning tone
-    // knob up output dynamic setting selected.
+    // Regular soft limiter. Rarely clips. Lower limit threshold by turning
+    // tone knob up output dynamic setting selected.
     softerLimiterLeft.limit = (0.85 - (outputAmplification * 0.85));
     softerLimiterRight.limit = (0.85 - (outputAmplification * 0.85));
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 1.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
     break;
   }
   case 1: {
@@ -718,13 +708,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
                             (1.2 - outputAmplification));
     leftOutput *= modifier;
     rightOutput *= modifier;
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 1., 0.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 2: {
     // Same as last but with saturation
@@ -750,17 +734,11 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 1., 1.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 3: {
-    // Just saturation. Control gain going into saturation with tone knob output
-    // dynamic setting
+    // Just saturation. Control gain going into saturation with tone knob
+    // output dynamic setting
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
     saturatedLeft = leftOutput;
@@ -776,13 +754,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 1., 0., 0.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 4: {
     // Bogaudio LMTR then stock VCV clip
@@ -799,13 +771,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
                             (1.2 - outputAmplification));
     leftOutput *= modifier;
     rightOutput *= modifier;
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 1., 0., 1.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 5: {
     // Stock VCV clip then Bogaudio LMTR
@@ -822,13 +788,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     leftOutput *= modifier;
     rightOutput *= modifier;
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 1., 1., 0.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 6: {
     softerLimiterLeft.limit = 0.85;
@@ -837,13 +797,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     campestria::foldbackDistortion(leftOutput, 1. - outputAmplification);
     campestria::foldbackDistortion(rightOutput, 1. - outputAmplification);
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 1., 1., 1.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 7: {
     softerLimiterLeft.limit = 0.85;
@@ -864,13 +818,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(1., 0., 0., 0.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 8: {
     // Same as last but saturation before ripped speaker
@@ -897,13 +845,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(1., 0., 0., 1.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 9: {
     // Same as last but in addition to saturation there is also a hard clipper
@@ -942,13 +884,7 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
 
     hardLimiter(leftOutput, rightOutput);
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(1., 0., 1., 0.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
+
   } break;
   case 10: {
     // Last one is Bogaudio LMTR followed by the ripped speaker
@@ -969,13 +905,6 @@ inline void gainControl(double &leftOutput, double &rightOutput) {
     }
     leftOutput = leftOutput * (1. - mix) + saturatedLeft * mix;
     rightOutput = rightOutput * (1. - mix) + saturatedRight * mix;
-    if (gainModeLedTimer < gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(1., 0., 1., 1.);
-    } else if (gainModeLedTimer == gainModeLedOnTime) {
-      ++gainModeLedTimer;
-      prepareLeds(0., 0., 0., 0.);
-    }
   } break;
   case 11: {
     params.SetGainMode(0);
@@ -992,10 +921,10 @@ inline void prepareToClear() {
     clear = false;
   }
 
-  clearPopCancelValue = clearPopFilter.processLowpass(!triggerClear);
+  clearPopCancelValue = clearPopFilter.process(!triggerClear);
 
   if (clearPopCancelValue > 1 - 1e-30) {
-    clearPopFilter.tmp = 1.;
+    clearPopFilter.value = 1.;
     clearPopCancelValue = 1.;
   }
 }
@@ -1003,10 +932,20 @@ inline void prepareToClear() {
 // unsigned int counter = 0;
 void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
                    size_t size) {
+  // phase 1: refresh input signals
+  hw.ProcessAnalogControls();
+  hw.tap.Debounce();
+  checkSwitches();
+  prepareLeds(samples.leftInput * minus20dBGain,
+              samples.rightInput * minus20dBGain, samples.leftOutput,
+              samples.rightOutput);
+
+  // phase 2: refresh derived parameters
+  ProcessAllParameters();
+
+  // phase 3: process all audio samples for the block
   for (size_t i = 0; i < size; i += 1) {
     reverb.freeze(freeze);
-
-    processAllParameters();
 
     interpolatingDelayHold();
 
@@ -1034,14 +973,34 @@ void AudioCallback(AudioHandle::InputBuffer x, AudioHandle::OutputBuffer out,
     out[0][i] = samples.leftOutput;
     out[1][i] = samples.rightOutput;
   }
-  incrementButtonHoldCounter(size);
+}
+
+void ProcessLEDs() {
+  // If the tone knob is not moving and the mode LEDs are not shining, show
+  // audio IO levels on LEDs
+  if ((gainModeLedCountdown == 0) and (!toneKnobIsMoving)) {
+  }
+
+  // allow gain mode countdown to override the LED state
+  if (gainModeLedCountdown > 0) {
+    const uint32_t gainModeLEDMask = params.GainMode() + 1;
+
+    --gainModeLedCountdown;
+    uint32_t intensity = (gainModeLedCountdown != 0);
+    uint32_t w = !!(gainModeLEDMask & 8);
+    uint32_t x = !!(gainModeLEDMask & 4);
+    uint32_t y = !!(gainModeLEDMask & 2);
+    uint32_t z = !!(gainModeLEDMask & 1);
+    prepareLeds(w * intensity, x * intensity, y * intensity, z * intensity);
+  }
+  hw.UpdateLeds();
 }
 
 uint32_t testValue = 0;
 double maxLoad = 0.;
 
 void SetReverbDefaults() {
-  reverb.setSampleRate(32000);
+  reverb.setSampleRate(hw.AudioSampleRate());
 
   reverb.setTimeScale(1.007500);
   reverb.setPreDelay(0.000000);
@@ -1052,19 +1011,60 @@ void SetReverbDefaults() {
   reverb.setDecay(0.877465);
   reverb.setTankDiffusion(params.diffusion * 0.7);
   reverb.setTankFilterLowCutFrequency(10. * params.reverbDampLow);
-  reverb.setTankFilterHighCutFrequency(10. - (10. * params.reverbDampHigh));
+  reverb.setTankFilterHighCutFrequency(10. * (1. - params.reverbDampHigh));
   reverb.setTankModSpeed(1.0);
   reverb.setTankModDepth(0.5);
   reverb.setTankModShape(0.5);
 }
 
+void LEDEchoLoop(uint32_t value) {
+  while (true) {
+    for (int i = 0; i < 4; i++) {
+      hw.SetLed(i, 0, 0, 0);
+    }
+    hw.UpdateLeds();
+    System::Delay(1000);
+    for (int i = 0; i < 4; i++) {
+      hw.SetLed(i, 0, 0, 1);
+    }
+    hw.UpdateLeds();
+    System::Delay(2000);
+
+    for (int low_bit = 28; low_bit >= 0; low_bit -= 4) {
+      for (int i = 0; i < 4; i++) {
+        hw.SetLed(i, 0, 0, 0);
+      }
+      hw.UpdateLeds();
+      System::Delay(1000);
+
+      uint32_t ledFlags = (value >> low_bit) & 0xF;
+      if (ledFlags == 0) {
+        for (int i = 0; i < 4; i++) {
+          hw.SetLed(i, 1, 1, 1);
+        }
+      } else {
+        hw.SetLed(0, (ledFlags & 8) != 0, 0, 0);
+        hw.SetLed(1, (ledFlags & 4) != 0, 0, 0);
+        hw.SetLed(2, (ledFlags & 2) != 0, 0, 0);
+        hw.SetLed(3, (ledFlags & 1) != 0, 0, 0);
+      }
+      hw.UpdateLeds();
+      System::Delay(1000);
+    }
+  }
+}
+
 int main(void) {
   hw.Init(true);
 
+  const int AudioBlockSize = 32;
+  hw.SetAudioBlockSize(AudioBlockSize);
+  hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_32KHZ);
+
   bogLimiter.init();
 
-  softerLimiterLeft.Init(32000);
-  softerLimiterRight.Init(32000);
+  softerLimiterLeft.Init(hw.AudioSampleRate());
+  softerLimiterRight.Init(hw.AudioSampleRate());
 
   // LEDs indicate we are starting up
   hw.leds[0].Set(1, 0, 0);
@@ -1084,22 +1084,17 @@ int main(void) {
 
   SetReverbDefaults();
 
-  hw.SetAudioBlockSize(32);
-  hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_32KHZ);
   hw.seed.audio_handle.SetPostGain(1.0);
   hw.seed.audio_handle.SetOutputCompensation(1.0);
 
-  hw.knobs[0].SetCoeff(0.001);
-  hw.knobs[1].SetCoeff(0.01);
-  hw.knobs[2].SetCoeff(0.01);
-  hw.knobs[3].SetCoeff(0.001);
-  hw.knobs[4].SetCoeff(0.01);
-  hw.knobs[5].SetCoeff(0.01);
-  hw.knobs[6].SetCoeff(0.001);
-
-  hw.StartAudio(AudioCallback);
-
-  hw.StartAdc();
+  // default slew is 2 milliseconds which for current parameters is 2
+  // audio callback blocks (32 samples at 32 khz), which works out to
+  // a coefficient of about 0.001 * block size, but we want some
+  // controls to be snappier.
+  hw.knobs[1].SetCoeff(0.01f * static_cast<float>(AudioBlockSize));
+  hw.knobs[2].SetCoeff(0.01f * static_cast<float>(AudioBlockSize));
+  hw.knobs[4].SetCoeff(0.01f * static_cast<float>(AudioBlockSize));
+  hw.knobs[5].SetCoeff(0.01f * static_cast<float>(AudioBlockSize));
 
   // LEDs indicate that we are ready to go
   hw.leds[0].Set(1, 0, 0);
@@ -1114,18 +1109,16 @@ int main(void) {
   hw.leds[3].Set(0, 0, 0);
   hw.UpdateLeds();
 
+  hw.StartAdc();
+
+  hw.StartAudio(AudioCallback);
+
   while (1) {
     checkSwitches();
-    // Process switches occurs at audio rate x the callback
-    checkButton();
-    processButton();
-    // The button LED counter occurs at audio rate
-    setAndUpdateGainLeds(controlState.led1, controlState.led2,
-                         controlState.led3, controlState.led4);
 
     if (clearPopCancelValue < 1e-30) {
       if (triggerClear) {
-        clearPopFilter.tmp = 0.;
+        clearPopFilter.value = 0.;
         clearPopCancelValue = 0.;
         reverb.clear();
         triggerClear = false;

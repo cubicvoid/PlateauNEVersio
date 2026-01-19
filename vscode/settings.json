@@ -1,0 +1,24 @@
+{
+    "workbench.colorTheme": "Shades of Purple",
+    "makefile.launchConfigurations": [
+        {
+            "cwd": "${workspaceFolder}/build",
+            "binaryPath": "${workspaceFolder}/build/PlateauTest.elf",
+            "binaryArgs": []
+        }
+    ],
+    "files.associations": {
+        "cstring": "cpp",
+        "random": "cpp",
+        "string": "cpp",
+        "vector": "cpp",
+        "iostream": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "enabled",
+    "files.exclude": {
+        "**/*.rpyc": true,
+        "**/*.rpa": true,
+        "**/*.rpymc": true,
+        "**/cache/": true
+    }
+}

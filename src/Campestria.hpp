@@ -7,11 +7,11 @@
 
 namespace campestria {
 
-struct ExponentialFollower {
+struct ExponentialRelease {
   double releaseSlew;
   double output = 1;
 
-  ExponentialFollower(double releaseSamples = 1280) {
+  ExponentialRelease(double releaseSamples = 1280) {
     // The exact value is `1 - exp(-1/releaseSamples)`
     // but this is a decent approximation
     releaseSlew = 1 / (releaseSamples + 1);
@@ -35,14 +35,14 @@ struct LimiterAttackHoldRelease {
   signalsmith::envelopes::BoxStackFilter<double> smoother{0};
   // We don't need fractional delays, so this could be nearest-sample
   signalsmith::delay::Delay<double> delay;
-  ExponentialFollower follower; // see the previous example code
+  ExponentialRelease follower; // see the previous example code
 
   int attackSamples = 0;
   void Init(double sampleRate) {
     attackSamples = attackMs * 0.001 * sampleRate;
     int holdSamples = holdMs * 0.001 * sampleRate;
     double followerSamples = releaseMs * 0.001 * sampleRate;
-    follower = ExponentialFollower(followerSamples);
+    follower = ExponentialRelease(followerSamples);
 
     peakHold.resize(attackSamples + holdSamples);
     smoother.resize(attackSamples, 3);
@@ -87,27 +87,5 @@ inline double hardLimit100_(const double &x) {
 }
 
 inline double amp120_(const double &x) { return x * 1.2; }
-
-struct KnobOnePoleFilter {
-  double tmp = 0.;
-
-  KnobOnePoleFilter() { inline double processLowpass(const double &x); }
-
-  double processLowpass(const double &x) {
-    tmp = 0.0005 * x + 0.9995 * tmp;
-    return tmp;
-  }
-};
-
-struct PopFilter {
-  double tmp = 0.;
-
-  PopFilter() { inline double processLowpass(const double &x); }
-
-  double processLowpass(const double &x) {
-    tmp = 0.01 * x + 0.99 * tmp;
-    return tmp;
-  }
-};
 
 } // namespace campestria
