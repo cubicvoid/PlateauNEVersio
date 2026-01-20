@@ -96,6 +96,8 @@ struct State {
   unsigned int toneKnobLedCountdown = 0;
   float toneKnobLEDs[4];
 
+  ButtonMode buttonMode = ButtonMode::Gain;
+
   void StartToneKnobLEDCountdown() {
     toneKnobLedCountdown = TONE_KNOB_HOLD_SEC / hw.AudioCallbackRate();
   }
@@ -117,6 +119,20 @@ struct State {
     toneKnobLEDs[2] = y;
     toneKnobLEDs[3] = z;
   }
+
+  void NextButtonMode() {
+    switch (buttonMode) {
+    case ButtonMode::Gain:
+      buttonMode = ButtonMode::Clear;
+      break;
+    case ButtonMode::Clear:
+      buttonMode = ButtonMode::Freeze;
+      break;
+    case ButtonMode::Freeze:
+      buttonMode = ButtonMode::Gain;
+      break;
+    }
+  }
 };
 
 State state;
@@ -132,7 +148,6 @@ unsigned int confirmationSequenceCounter = 0;
 unsigned int confirmationSequenceTimer = 0;
 
 enum class ButtonMode { Gain, Clear, Freeze };
-ButtonMode buttonMode = ButtonMode::Gain;
 
 Dattorro reverb(32000, 16, 4.0);
 
@@ -152,16 +167,11 @@ bool clear = false;
 
 struct LedTimer {
   static constexpr float LED_TIMEOUT = 1.0f;
-  float leds[4];
+
   unsigned int genericLedCountdown = 0;
 
   void Start() { genericLedCountdown = LED_TIMEOUT * hw.AudioCallbackRate(); }
-  void SetLEDs(float w, float x, float y, float z) {
-    leds[0] = w;
-    leds[1] = x;
-    leds[2] = y;
-    leds[3] = z;
-  }
+
   void Process() {
     if (genericLedCountdown > 0) {
       if (--genericLedCountdown > 0) {
@@ -277,7 +287,6 @@ inline bool SwitchStatesMatch(SwitchState topState, SwitchState bottomState) {
 }
 
 inline void ProcessSwitches() {
-
   if (SwitchStatesMatch(SwitchState::RIGHT, SwitchState::LEFT)) {
     const float knobValue = controlState.Knob(Knob::TONE).value;
     if (fabs(knobValue - params.inputDampHigh) < 0.01) {
@@ -392,7 +401,7 @@ inline void ProcessButton() {
     state.buttonHoldTimer = 0;
   }
 
-  switch (buttonMode) {
+  switch (state.buttonMode) {
   case ButtonMode::Gain:
     processButton_GainMode();
     break;
@@ -404,14 +413,13 @@ inline void ProcessButton() {
     break;
   }
   if (hw.SwitchPressed()) {
-    ++state.buttonHoldTimer;
     if (state.buttonHoldTimer ==
         10 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
       ledTimer.Start();
     }
     if (state.buttonHoldTimer ==
         11 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
-      if (buttonMode == ButtonMode::Gain) {
+      if (state.buttonMode == ButtonMode::Gain) {
 
         // params.modDepth = 0.5 + (state.lockedModDepthValue * 15.5);
         if (state.lockModDepthTo3_125_) {
@@ -428,21 +436,14 @@ inline void ProcessButton() {
     if (hw.tap.RisingEdge()) {
       if (confirmationSequence) {
         if (ledTimer.genericLedCountdown > 0) {
-          if (buttonMode == ButtonMode::Freeze) {
-            buttonMode = ButtonMode::Gain;
-            // saveData();
-          } else {
-            buttonMode =
-                static_cast<ButtonMode>(static_cast<int>(buttonMode) + 1);
-            // saveData();
-          }
+          state.NextButtonMode();
           confirmationSequence = false;
         } else {
           // This might be redundant.
           confirmationSequence = false;
         }
       }
-      if (buttonMode == ButtonMode::Clear) {
+      if (state.buttonMode == ButtonMode::Clear) {
         ledTimer.Start();
         clear = true;
       }
@@ -456,7 +457,7 @@ inline void ProcessButton() {
         // sequence.
         confirmationSequence = true;
       }
-      if (buttonMode == ButtonMode::Gain) {
+      if (state.buttonMode == ButtonMode::Gain) {
         if (state.buttonHoldTimer < 0.25f * hw.AudioCallbackRate()) {
           gainModeLedCountdown =
               gainModeLedDisplayTime * hw.AudioCallbackRate();
@@ -511,6 +512,8 @@ void ProcessPreDelay() {
 }
 
 inline void ApplyParameters() {
+  interpolatingDelayHold();
+
   reverb.setTimeScale(params.timeScale);
   reverb.setPreDelay(params.preDelay);
   reverb.setDecay(params.decay);
@@ -837,8 +840,6 @@ void AudioCallback(daisy::AudioHandle::InputBuffer x,
     // aren't samples already guaranteed to have absolute value at most 1?
     double leftSample = campestria::hardLimit100_(leftInputRaw) * 10.;
     double rightSample = campestria::hardLimit100_(rightInputRaw) * 10.;
-
-    interpolatingDelayHold();
 
     prepareToClear();
 
