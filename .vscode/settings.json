@@ -1,4 +1,5 @@
 {
+    "workbench.colorTheme": "Shades of Purple",
     "makefile.launchConfigurations": [
         {
             "cwd": "${workspaceFolder}/build",
@@ -12,5 +13,17 @@
         "string": "cpp",
         "vector": "cpp",
         "iostream": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "enabled",
+    "C_Cpp.clang_format_fallbackStyle": "LLVM",
+    "files.exclude": {
+        "**/*.rpyc": true,
+        "**/*.rpa": true,
+        "**/*.rpymc": true,
+        "**/cache/": true
+    },
+    "[cpp]": {
+        "editor.wordWrapColumn": 100,
+        "editor.formatOnSave": true
     }
 }
