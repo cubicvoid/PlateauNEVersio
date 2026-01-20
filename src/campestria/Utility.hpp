@@ -43,4 +43,27 @@ struct GateFilter : public OnePoleFilter {
   GateFilter() : OnePoleFilter(0.15) {}
 };
 
+struct RippedSpeakerFilter {
+  static constexpr unsigned int HOLD_SAMPLES = 32;
+  GateFilter gateFilter;
+  uint32_t rippedCountdown = 0;
+  double threshold_ = 1.0;
+
+  double process(double x) {
+    if (fabs(x) > threshold_) {
+      rippedCountdown = HOLD_SAMPLES;
+    }
+    double coeff;
+    if (rippedCountdown > 0) {
+      --rippedCountdown;
+      coeff = gateFilter.process(0);
+    } else {
+      coeff = gateFilter.process(1);
+    }
+    return coeff * x;
+  }
+
+  void SetThreshold(double threshold) { threshold_ = threshold; }
+};
+
 } // namespace campestria

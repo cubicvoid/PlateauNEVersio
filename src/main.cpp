@@ -6,8 +6,6 @@
 
 namespace campestria {
 
-enum class ButtonMode { Gain, Clear, Freeze };
-
 using daisy::DaisyVersio;
 
 DaisyVersio hw;
@@ -81,26 +79,13 @@ inline void prepareLeds(const double &w, const double &x, const double &y,
   hw.SetLed(3, z, 0.0f, 0.0f);
 }
 
-struct CallbackRateTimer {
-  int32_t time = 0;
-  void Advance() { time++; }
-  void Reset() { time = 0; }
-
-  bool Active() { return time != 0; }
-
-  int32_t TicksUntilTime(double sec) {
-    int32_t triggerTime = static_cast<int32_t>(sec * hw.AudioCallbackRate());
-    return triggerTime - time;
-  }
-
-  bool TimeTrigger(double sec) { return TicksUntilTime(sec) == 0; }
-};
-
+enum class ButtonMode { GAIN, CLEAR, FREEZE };
 struct State {
   static constexpr float TONE_KNOB_HOLD_SEC = 1.0;
 
-  CallbackRateTimer buttonHold;
-  unsigned int buttonOffTimer = 0;
+  uint32_t startTime = daisy::System::GetNow();
+
+  bool awaitingConfirmation = false;
 
   double lockedModDepthValue = 0.;
 
@@ -115,7 +100,10 @@ struct State {
   unsigned int toneKnobLedCountdown = 0;
   float toneKnobLEDs[4];
 
-  ButtonMode buttonMode = ButtonMode::Gain;
+  ButtonMode buttonMode = ButtonMode::GAIN;
+
+  RippedSpeakerFilter rippedSpeakerLeft;
+  RippedSpeakerFilter rippedSpeakerRight;
 
   void StartToneKnobLEDCountdown() {
     toneKnobLedCountdown = TONE_KNOB_HOLD_SEC * hw.AudioCallbackRate();
@@ -141,30 +129,20 @@ struct State {
 
   void NextButtonMode() {
     switch (buttonMode) {
-    case ButtonMode::Gain:
-      buttonMode = ButtonMode::Clear;
+    case ButtonMode::GAIN:
+      buttonMode = ButtonMode::CLEAR;
       break;
-    case ButtonMode::Clear:
-      buttonMode = ButtonMode::Freeze;
+    case ButtonMode::CLEAR:
+      buttonMode = ButtonMode::FREEZE;
       break;
-    case ButtonMode::Freeze:
-      buttonMode = ButtonMode::Gain;
+    case ButtonMode::FREEZE:
+      buttonMode = ButtonMode::GAIN;
       break;
     }
   }
 };
 
 State state;
-
-double volumeChange = 0.;
-
-unsigned int holdCount = 0;
-
-bool confirmationSequence = false;
-bool confirmationSequenceOne = false;
-bool confirmationSequenceTwo = false;
-unsigned int confirmationSequenceCounter = 0;
-unsigned int confirmationSequenceTimer = 0;
 
 Dattorro reverb(32000, 16, 4.0);
 
@@ -181,6 +159,7 @@ struct LedTimer {
   unsigned int genericLedCountdown = 0;
 
   void Start() { genericLedCountdown = LED_TIMEOUT * hw.AudioCallbackRate(); }
+  void Cancel() { genericLedCountdown = 0; }
 
   void Process() {
     if (genericLedCountdown > 0) {
@@ -217,55 +196,6 @@ inline void softLimiter(double &x, double &y, double *xOut, double *yOut) {
 // const double hardClipGain = 0.85;
 inline double hardClip(const double &x, double limit) {
   return std::max(std::min(x, limit), -limit);
-}
-
-const unsigned int rippedSpeakerHoldSamples = 32;
-
-struct RippedSpeakerFilter {
-  GateFilter leftGateFilter;
-  unsigned int rippedCount = 0;
-  double value = 1.;
-};
-
-inline void rippedSpeakerLeft(double &x, double threshold) {
-  static GateFilter leftGateFilter;
-  static unsigned int rippedCountLeft = 0;
-  static double leftValue = 1.;
-  if (rippedCountLeft < rippedSpeakerHoldSamples) {
-    ++rippedCountLeft;
-    leftValue = 0.;
-  } else if (rippedCountLeft == rippedSpeakerHoldSamples) {
-    rippedCountLeft = rippedSpeakerHoldSamples + 1;
-    leftValue = 1.;
-  }
-  if (x > threshold || x < -threshold) {
-    rippedCountLeft = 0;
-    leftValue = 0.;
-  }
-  x *= leftGateFilter.process(leftValue);
-}
-
-inline void rippedSpeakerRight(double &x, double threshold) {
-  static GateFilter rightGateFilter;
-  static unsigned int rippedCountRight = 0;
-  static double rightValue = 1.;
-  if (rippedCountRight < rippedSpeakerHoldSamples) {
-    ++rippedCountRight;
-    rightValue = 0.;
-  } else if (rippedCountRight == rippedSpeakerHoldSamples) {
-    rippedCountRight = rippedSpeakerHoldSamples + 1;
-    rightValue = 1.;
-  }
-  if (x > threshold || x < -threshold) {
-    rippedCountRight = 0;
-    rightValue = 0.;
-  }
-  x *= rightGateFilter.process(rightValue);
-}
-
-inline void ReadSwitches() {
-  controlState.topSwitch = static_cast<SwitchState>(hw.sw[0].Read());
-  controlState.bottomSwitch = static_cast<SwitchState>(hw.sw[1].Read());
 }
 
 inline bool SwitchStatesMatch(SwitchState topState, SwitchState bottomState) {
@@ -384,31 +314,52 @@ inline void prepareToClear() {
 // mode not confirming will lock mod depth to 3.125%. In buffer clear
 // mode, a rising edge will trigger the buffers to clear. In freeze mode,
 // holding the button will freeze the buffers.
-inline void ProcessButton() {
-
-  if (hw.SwitchPressed()) {
-    if (hw.tap.RisingEdge()) {
-      state.buttonHold.Reset();
+void ProcessButton() {
+  if (controlState.tap.RisingEdge()) {
+    if (state.awaitingConfirmation && ledTimer.genericLedCountdown > 0) {
+      // Confirmed, advance to next button mode.
+      state.awaitingConfirmation = false;
+      ledTimer.Cancel();
+      state.NextButtonMode();
+    } else if (state.buttonMode == ButtonMode::CLEAR) {
+      // In clear mode when we aren't waiting on confirmation, a rising
+      // edge means clear the reverb buffers.
+      ledTimer.Start();
+      clear = true;
     }
-    state.buttonHold.Advance();
-  }
-
-  if (hw.SwitchPressed()) {
-
-    if (state.buttonHold.TimeTrigger(10.0)) {
+  } else if (controlState.tap.FallingEdge()) {
+    const float pressTime = controlState.tap.SecondsSinceLastPress();
+    if (10.0 < pressTime && pressTime < 11.0) {
+      // Button released between seconds 10 and 11, enable confirmation
+      // sequence.
+      state.awaitingConfirmation = true;
+    }
+    if (state.buttonMode == ButtonMode::GAIN) {
+      if (pressTime < 0.25) {
+        // Released after < 1/4 second, move to next gain mode
+        gainModeLedCountdown = gainModeLedDisplayTime * hw.AudioCallbackRate();
+        params.SetGainMode(params.GainMode() + 1);
+      }
+    }
+  } else if (controlState.tap.Pressed()) {
+    const float pressTime = controlState.tap.SecondsSinceLastPress();
+    if (!state.awaitingConfirmation && 10 <= pressTime && pressTime < 11) {
       // We hit 10 seconds, start the LED timer to signal the confirmation
       // sequence.
       ledTimer.Start();
+      state.awaitingConfirmation = true;
     }
-    if (state.buttonMode == ButtonMode::Gain) {
-      if (state.buttonHold.TicksUntilTime(5.0) > 0) {
-        // Have been holding for less than five seconds.
+    if (state.buttonMode == ButtonMode::GAIN) {
+      if (pressTime < 5) {
+        // Have been holding for less than five seconds, display current gain
+        // mode.
         gainModeLedCountdown = gainModeLedDisplayTime * hw.AudioCallbackRate();
       }
 
-      if (state.buttonHold.TimeTrigger(11.0)) {
+      if (state.awaitingConfirmation && pressTime > 11) {
         // 11 second button hold in gain mode with no confirmation sequence,
         // toggle locked mod depth mode
+        state.awaitingConfirmation = false;
         if (state.lockModDepthTo3_125_) {
           state.lockModDepthTo3_125_ = false;
           params.modShape = 0.5;
@@ -419,48 +370,15 @@ inline void ProcessButton() {
         }
       }
     }
-    if (hw.tap.RisingEdge()) {
-      if (confirmationSequence) {
-        if (ledTimer.genericLedCountdown > 0) {
-          state.NextButtonMode();
-          confirmationSequence = false;
-        } else {
-          // This might be redundant.
-          confirmationSequence = false;
-        }
-      }
-      if (state.buttonMode == ButtonMode::Clear) {
-        ledTimer.Start();
-        clear = true;
-      }
-    }
-  } else {
-
-    if (hw.tap.FallingEdge()) {
-      if (state.buttonHold.TicksUntilTime(10.0) < 0 &&
-          state.buttonHold.TicksUntilTime(11.0) > 0) {
-        // Button released between seconds 10 and 11, enable confirmation
-        // sequence.
-        confirmationSequence = true;
-      }
-      if (state.buttonMode == ButtonMode::Gain) {
-        if (state.buttonHold.TicksUntilTime(0.25) > 0) {
-          // Released after < 1/4 second, move to next gain mode
-          gainModeLedCountdown =
-              gainModeLedDisplayTime * hw.AudioCallbackRate();
-          params.SetGainMode(params.GainMode() + 1);
-        }
-      }
-    }
   }
 }
 
 inline void interpolatingDelayHold() {
-  if (holdCount < 192000)
-    ++holdCount;
-  else
+  if (daisy::System::GetNow() - state.startTime >= 6000) {
     _InterpDelayHold = 1.;
+  }
 }
+
 inline float SnappedToUnitInterval(float v) {
   return (v < 0.01f) ? 0.0f : (v > 0.99) ? 1.0f : (v - 0.01f) / 0.98f;
 }
@@ -497,7 +415,9 @@ void ProcessPreDelay() {
   params.preDelay = controlState.Knob(Knob::PRE_DELAY).value;
 }
 
-inline void ApplyParameters() {
+void ApplyParameters() {
+  ProcessButton();
+
   if (clearPopCancelValue < 1e-30) {
     if (triggerClear) {
       clearPopFilter.value = 0.;
@@ -506,6 +426,20 @@ inline void ApplyParameters() {
       triggerClear = false;
     }
   }
+
+  if (params.GainMode() == 0) {
+    softerLimiterLeft.limit = (0.85 - (outputAmplification * 0.85));
+    softerLimiterRight.limit = (0.85 - (outputAmplification * 0.85));
+  } else {
+    softerLimiterLeft.limit = 0.85;
+    softerLimiterRight.limit = 0.85;
+  }
+
+  const double rippedSpeakerThreshold =
+      (2. + 2. * outputAmplification * outputAmplification -
+       4. * outputAmplification);
+  state.rippedSpeakerLeft.SetThreshold(rippedSpeakerThreshold);
+  state.rippedSpeakerRight.SetThreshold(rippedSpeakerThreshold);
 
   interpolatingDelayHold();
 
@@ -519,9 +453,7 @@ inline void ApplyParameters() {
   reverb.enableInputDiffusion(diffusionEnabled);
 }
 
-inline void RefreshParameters() {
-  ProcessButton();
-
+void RefreshParameters() {
   ProcessTimeScale();
   ProcessMix();
   ProcessModSpeed();
@@ -542,15 +474,11 @@ inline void gainControl(double *left, double *right) {
   case 0: {
     // Regular soft limiter. Rarely clips. Lower limit threshold by
     // turning tone knob up output dynamic setting selected.
-    softerLimiterLeft.limit = (0.85 - (outputAmplification * 0.85));
-    softerLimiterRight.limit = (0.85 - (outputAmplification * 0.85));
     break;
   }
   case 1: {
     // Same clipper as VCV rack. Lower clip threshold by turning tone knob
     // up with output dynamic setting selected.
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     const double clipLimit =
         (1. - outputAmplification) * (1. - outputAmplification);
     const double modifier =
@@ -560,8 +488,6 @@ inline void gainControl(double *left, double *right) {
   } break;
   case 2: {
     // Same as last but with saturation
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     const double clipLimit =
         (1. - outputAmplification) * (1. - outputAmplification);
     const double modifier =
@@ -587,8 +513,6 @@ inline void gainControl(double *left, double *right) {
   case 3: {
     // Just saturation. Control gain going into saturation with tone knob
     // output dynamic setting
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     saturatedLeft = *left;
     saturatedRight = *right;
     saturatedLeft *= 1. + outputAmplification * 20.;
@@ -606,11 +530,7 @@ inline void gainControl(double *left, double *right) {
   } break;
   case 4: {
     // Bogaudio LMTR then stock VCV clip
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     hardLimiter(left, right);
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     const double clipLimit =
         (1. - outputAmplification) * (1. - outputAmplification);
     const double modifier =
@@ -620,8 +540,6 @@ inline void gainControl(double *left, double *right) {
   } break;
   case 5: {
     // Stock VCV clip then Bogaudio LMTR
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     const double clipLimit =
         (1. - outputAmplification) * (1. - outputAmplification);
     const double modifier =
@@ -632,25 +550,15 @@ inline void gainControl(double *left, double *right) {
     hardLimiter(left, right);
   } break;
   case 6: {
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     // Foldback distortion. Full wave rectifier that folds back on itself
     campestria::foldbackDistortion(*left, 1. - outputAmplification);
     campestria::foldbackDistortion(*right, 1. - outputAmplification);
     hardLimiter(left, right);
   } break;
   case 7: {
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
-    saturatedLeft = *left;
-    saturatedRight = *right;
     // Output to zero once past threshold. Simulates ripped speaker
-    rippedSpeakerLeft(saturatedLeft,
-                      (2. + 2. * outputAmplification * outputAmplification -
-                       4. * outputAmplification));
-    rippedSpeakerRight(saturatedRight,
-                       (2. + 2. * outputAmplification * outputAmplification -
-                        4. * outputAmplification));
+    saturatedLeft = state.rippedSpeakerLeft.process(*left);
+    saturatedRight = state.rippedSpeakerRight.process(*right);
     mix *= 2;
     if (mix > 1.) {
       mix = 1.;
@@ -662,16 +570,8 @@ inline void gainControl(double *left, double *right) {
   } break;
   case 8: {
     // Same as last but saturation before ripped speaker
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
-    saturatedLeft = *left;
-    saturatedRight = *right;
-    rippedSpeakerLeft(saturatedLeft,
-                      (2. + 2. * outputAmplification * outputAmplification -
-                       4. * outputAmplification));
-    rippedSpeakerRight(saturatedRight,
-                       (2. + 2. * outputAmplification * outputAmplification -
-                        4. * outputAmplification));
+    saturatedLeft = state.rippedSpeakerLeft.process(*left);
+    saturatedRight = state.rippedSpeakerRight.process(*right);
     saturatedLeft *= 1. + outputAmplification * 15.;
     saturatedRight *= 1. + outputAmplification * 15.;
     saturation(&saturatedLeft);
@@ -690,8 +590,6 @@ inline void gainControl(double *left, double *right) {
   case 9: {
     // Same as last but in addition to saturation there is also a hard
     // clipper
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     const double clipLimit =
         (1. - outputAmplification) * (1. - outputAmplification) + 0.1;
     const double modifier = 1. + ((1. / (clipLimit - 0.1 + 0.000000001)) *
@@ -699,15 +597,8 @@ inline void gainControl(double *left, double *right) {
     *left = modifier * hardClip(*left, clipLimit);
     *right = modifier * hardClip(*right, clipLimit);
 
-    saturatedLeft = *left;
-    saturatedRight = *right;
-
-    rippedSpeakerLeft(saturatedLeft,
-                      (2. + 2. * outputAmplification * outputAmplification -
-                       4. * outputAmplification));
-    rippedSpeakerRight(saturatedRight,
-                       (2. + 2. * outputAmplification * outputAmplification -
-                        4. * outputAmplification));
+    saturatedLeft = state.rippedSpeakerLeft.process(*left);
+    saturatedRight = state.rippedSpeakerRight.process(*right);
     saturatedLeft *= 1. + outputAmplification * 15.;
     saturatedRight *= 1. + outputAmplification * 15.;
     saturation(&saturatedLeft);
@@ -725,17 +616,9 @@ inline void gainControl(double *left, double *right) {
   } break;
   case 10: {
     // Last one is Bogaudio LMTR followed by the ripped speaker
-    softerLimiterLeft.limit = 0.85;
-    softerLimiterRight.limit = 0.85;
     hardLimiter(left, left, -30.0f);
-    saturatedLeft = *left;
-    saturatedRight = *left;
-    rippedSpeakerLeft(saturatedLeft,
-                      (2. + 2. * outputAmplification * outputAmplification -
-                       4. * outputAmplification));
-    rippedSpeakerRight(saturatedRight,
-                       (2. + 2. * outputAmplification * outputAmplification -
-                        4. * outputAmplification));
+    saturatedLeft = state.rippedSpeakerLeft.process(*left);
+    saturatedRight = state.rippedSpeakerRight.process(*right);
     mix *= 2;
     if (mix > 1.) {
       mix = 1.;
@@ -749,12 +632,6 @@ inline void gainControl(double *left, double *right) {
   }
 
   softLimiter(*left, *right, left, right);
-}
-
-void ReadInputs() {
-  hw.ProcessAnalogControls();
-  hw.tap.Debounce();
-  ReadSwitches();
 }
 
 void ProcessLEDs() {
@@ -781,7 +658,7 @@ void ProcessLEDs() {
 void AudioCallback(daisy::AudioHandle::InputBuffer x,
                    daisy::AudioHandle::OutputBuffer out, size_t size) {
   // phase 1: refresh input signals
-  ReadInputs();
+  controlState.Refresh();
 
   // phase 2: refresh derived parameters
   RefreshParameters();
@@ -917,7 +794,6 @@ int main(void) {
   hw.StartAudio(AudioCallback);
 
   while (1) {
-    ReadSwitches();
 
     // Clear buffers. Fingers crossed it works.
     // if(triggerClear) {
