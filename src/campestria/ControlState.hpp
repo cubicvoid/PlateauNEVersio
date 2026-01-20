@@ -13,25 +13,27 @@ using daisy::DaisyVersio;
 // filters built into the ADC API because that would run before the endpoint
 // clipping and we want the smoothing to happen after.
 struct SmoothedKnob {
-  float prevValue;
-  float value;
-  float coeff = 0.016;
+  double value;
+  double rawValue_;
+
+  bool moving = false;
+  double coeff = 0.016;
 
   void Init(uint32_t sampleRate, float initialValue = 0.0f) {
-    prevValue = value = initialValue;
+    rawValue_ = value = initialValue;
     coeff = std::min(16.0f / sampleRate, 1.0f);
   }
 
-  void Refresh(float rawValue) {
-    prevValue = value;
-    const float scaled = rawValue * 1.01f - 0.005f;
-    const float clipped = std::max(std::min(scaled, 1.0f), 0.0f);
+  void Refresh(double rawValue) {
+    moving = fabs(rawValue_ - rawValue) > 0.00025;
+    rawValue_ = rawValue;
+    const double scaled = rawValue * 1.01 - 0.005;
+    const double clipped = std::max(std::min(scaled, 1.0), 0.0);
     value += coeff * (clipped - value);
     if (value <= 1.0e-030) {
-      value = 0.0f;
+      value = 0.0;
     }
   }
-  bool IsMoving() const { return fabs(value - prevValue) > 0.005; }
 };
 
 // The logical state of the input parameters from the DaisyVersio driver after

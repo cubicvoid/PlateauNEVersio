@@ -4,9 +4,8 @@
 #include <vector>
 
 extern float DSY_SDRAM_BSS sdramData[50][144000];
-extern unsigned int count;
-extern double hold;
-extern bool triggerClear;
+extern unsigned int _InterpDelayCount;
+extern double _InterpDelayHold;
 extern double clearPopCancelValue;
 
 class InterpDelay {
@@ -26,7 +25,7 @@ public:
     l = maxLength;
     lDouble = static_cast<double>(maxLength);
 
-    bufferNumber = ++count;
+    bufferNumber = ++_InterpDelayCount;
 
     setDelayTime(initDelayTime);
   }
@@ -69,7 +68,7 @@ public:
     dataR *= clearPopCancelValue;
     dataUpperR *= clearPopCancelValue;
 
-    output = hold * (dataR + f * (dataUpperR - dataR));
+    output = _InterpDelayHold * (dataR + f * (dataUpperR - dataR));
     //}
   }
 

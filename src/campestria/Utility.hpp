@@ -39,4 +39,8 @@ struct PopFilter : public OnePoleFilter {
   PopFilter() : OnePoleFilter(0.01) {}
 };
 
+struct GateFilter : public OnePoleFilter {
+  GateFilter() : OnePoleFilter(0.15) {}
+};
+
 } // namespace campestria

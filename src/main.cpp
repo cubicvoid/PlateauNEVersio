@@ -6,6 +6,8 @@
 
 namespace campestria {
 
+enum class ButtonMode { Gain, Clear, Freeze };
+
 using daisy::DaisyVersio;
 
 DaisyVersio hw;
@@ -24,13 +26,16 @@ struct Settings {
 Settings &operator*(const Settings &settings) { return *settings; }
 daisy::PersistentStorage<Settings> storage(hw.seed.qspi);
 
-campestria::LimiterAttackHoldRelease softerLimiterLeft;
-campestria::LimiterAttackHoldRelease softerLimiterRight;
+LimiterAttackHoldRelease softerLimiterLeft;
+LimiterAttackHoldRelease softerLimiterRight;
 
 bogaudio::Lmtr bogLimiter;
 
 const double minus18dBGain = 0.12589254;
 const double minus20dBGain = 0.1;
+
+double outputAmplification = 0.0;
+double inputAmplification = 0.0;
 
 struct Parameters {
   double wet = 0.5;
@@ -77,9 +82,6 @@ inline void prepareLeds(const double &w, const double &x, const double &y,
 struct State {
   static constexpr float TONE_KNOB_HOLD_SEC = 1.0;
 
-  // input volume modifier is currently unused
-  // double inputVolumeModifier = 1.;
-  // double tempInputVolumeModifier = 1.;
   unsigned int buttonHoldTimer = 0;
   unsigned int buttonOffTimer = 0;
 
@@ -99,7 +101,7 @@ struct State {
   ButtonMode buttonMode = ButtonMode::Gain;
 
   void StartToneKnobLEDCountdown() {
-    toneKnobLedCountdown = TONE_KNOB_HOLD_SEC / hw.AudioCallbackRate();
+    toneKnobLedCountdown = TONE_KNOB_HOLD_SEC * hw.AudioCallbackRate();
   }
 
   void AdvanceToneKnobLEDCountdown() {
@@ -147,23 +149,14 @@ bool confirmationSequenceTwo = false;
 unsigned int confirmationSequenceCounter = 0;
 unsigned int confirmationSequenceTimer = 0;
 
-enum class ButtonMode { Gain, Clear, Freeze };
-
 Dattorro reverb(32000, 16, 4.0);
 
 bool diffusionEnabled = true;
 
-double outputAmplification = 0.0;
-
-double inputAmplification = 0.0;
-
 ControlState controlState;
 
-unsigned int saveTimer = 0;
-bool saveTrigger = false;
-unsigned int saveTime = 32000;
-
 bool clear = false;
+bool triggerClear = false;
 
 struct LedTimer {
   static constexpr float LED_TIMEOUT = 1.0f;
@@ -204,24 +197,17 @@ inline void softLimiter(double &x, double &y, double *xOut, double *yOut) {
   *yOut = softerLimiterRight.sample(y);
 }
 
-double hardClipGain = 0.85;
-inline double hardClip(const double &x) {
-  return (x > hardClipGain) ? hardClipGain
-                            : ((x < -hardClipGain) ? -hardClipGain : x);
+// const double hardClipGain = 0.85;
+inline double hardClip(const double &x, double limit) {
+  return std::max(std::min(x, limit), -limit);
 }
 
 const unsigned int rippedSpeakerHoldSamples = 32;
 
-struct GateFilter {
-  double tmp = 0.;
-  static constexpr double smoothing = 0.85;
-
-  GateFilter() { inline double processLowpass(const double &x); }
-
-  double processLowpass(const double &x) {
-    tmp = (1 - smoothing) * x + smoothing * tmp;
-    return tmp;
-  }
+struct RippedSpeakerFilter {
+  GateFilter leftGateFilter;
+  unsigned int rippedCount = 0;
+  double value = 1.;
 };
 
 inline void rippedSpeakerLeft(double &x, double threshold) {
@@ -239,7 +225,7 @@ inline void rippedSpeakerLeft(double &x, double threshold) {
     rippedCountLeft = 0;
     leftValue = 0.;
   }
-  x *= leftGateFilter.processLowpass(leftValue);
+  x *= leftGateFilter.process(leftValue);
 }
 
 inline void rippedSpeakerRight(double &x, double threshold) {
@@ -257,24 +243,8 @@ inline void rippedSpeakerRight(double &x, double threshold) {
     rippedCountRight = 0;
     rightValue = 0.;
   }
-  x *= rightGateFilter.processLowpass(rightValue);
+  x *= rightGateFilter.process(rightValue);
 }
-
-// These pointers are necessary to speed up the code, otherwise severe
-// crackling occurs.
-inline void setLEDs(const double &w, const double &x, const double &y,
-                    const double &z, bool update = false) {
-  hw.SetLed(0, w, 0.0f, 0.0f);
-  hw.SetLed(1, x, 0.0f, 0.0f);
-  hw.SetLed(2, y, 0.0f, 0.0f);
-  hw.SetLed(3, z, 0.0f, 0.0f);
-  if (update) {
-    hw.UpdateLeds();
-  }
-}
-
-bool gateState = false;
-inline void checkGate() { gateState = !hw.gate.State(); }
 
 inline void ReadSwitches() {
   controlState.topSwitch = static_cast<SwitchState>(hw.sw[0].Read());
@@ -292,7 +262,7 @@ inline void ProcessSwitches() {
     if (fabs(knobValue - params.inputDampHigh) < 0.01) {
       params.inputDampHigh = knobValue;
       reverb.setInputFilterHighCutoffPitch(10. - (10. * params.inputDampHigh));
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(0., params.inputDampHigh, 0., 0.);
@@ -302,7 +272,7 @@ inline void ProcessSwitches() {
     if (fabs(knobValue - params.reverbDampHigh) < 0.01) {
       params.reverbDampHigh = knobValue;
       reverb.setTankFilterHighCutFrequency(10. - (10. * params.reverbDampHigh));
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(0., 0., 0., params.reverbDampHigh);
@@ -313,7 +283,7 @@ inline void ProcessSwitches() {
     if (fabs(knobValue - params.inputDampLow) < 0.01) {
       params.inputDampLow = knobValue;
       reverb.setInputFilterLowCutoffPitch(params.inputDampLow * 10.);
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(params.inputDampLow, 0., 0., 0.);
@@ -323,7 +293,7 @@ inline void ProcessSwitches() {
     if (fabs(knobValue - params.reverbDampLow) < 0.01) {
       params.reverbDampLow = knobValue;
       reverb.setTankFilterLowCutFrequency(params.reverbDampLow * 10.);
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(0., 0., params.reverbDampLow, 0.);
@@ -342,7 +312,7 @@ inline void ProcessSwitches() {
         }
         reverb.setTankDiffusion(params.diffusion * 0.7);
       }
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(params.diffusion, params.diffusion,
@@ -356,7 +326,7 @@ inline void ProcessSwitches() {
     const float knobValue = controlState.Knob(Knob::TONE).value;
     if (fabs(knobValue - inputAmplification) < 0.01) {
       inputAmplification = knobValue;
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(inputAmplification, inputAmplification,
@@ -366,7 +336,7 @@ inline void ProcessSwitches() {
     const float knobValue = controlState.Knob(Knob::TONE).value;
     if (fabs(knobValue - outputAmplification) < 0.01) {
       outputAmplification = knobValue;
-      if (controlState.Knob(Knob::TONE).IsMoving()) {
+      if (controlState.Knob(Knob::TONE).moving) {
         state.StartToneKnobLEDCountdown();
       }
       state.SetToneKnobLEDs(outputAmplification, outputAmplification,
@@ -374,6 +344,21 @@ inline void ProcessSwitches() {
     }
   }
   state.AdvanceToneKnobLEDCountdown();
+}
+
+PopFilter clearPopFilter;
+inline void prepareToClear() {
+  if (clear) {
+    triggerClear = true;
+    clear = false;
+  }
+
+  clearPopCancelValue = clearPopFilter.process(!triggerClear);
+
+  if (clearPopCancelValue > 1 - 1e-30) {
+    clearPopFilter.value = 1.;
+    clearPopCancelValue = 1.;
+  }
 }
 
 inline void processButton_GainMode() {
@@ -473,7 +458,7 @@ inline void interpolatingDelayHold() {
   if (holdCount < 192000)
     ++holdCount;
   else
-    hold = 1.;
+    _InterpDelayHold = 1.;
 }
 inline float SnappedToUnitInterval(float v) {
   return (v < 0.01f) ? 0.0f : (v > 0.99) ? 1.0f : (v - 0.01f) / 0.98f;
@@ -502,7 +487,7 @@ void ProcessModDepth() {
   }
 }
 
-inline void processDecay() {
+inline void ProcessDecay() {
   float scaledKnob =
       0.0001 + 0.7999 * (1 - controlState.Knob(Knob::DECAY).value);
   params.decay = 1 - (scaledKnob * scaledKnob);
@@ -512,6 +497,15 @@ void ProcessPreDelay() {
 }
 
 inline void ApplyParameters() {
+  if (clearPopCancelValue < 1e-30) {
+    if (triggerClear) {
+      clearPopFilter.value = 0.;
+      clearPopCancelValue = 0.;
+      reverb.clear();
+      triggerClear = false;
+    }
+  }
+
   interpolatingDelayHold();
 
   reverb.setTimeScale(params.timeScale);
@@ -535,16 +529,6 @@ inline void RefreshParameters() {
   ProcessSwitches();
 }
 
-// inline void saveCounterAudioRate() {
-//     if(saveTimer < saveTime) {
-//         ++saveTimer;
-//         saveTrigger = false;
-//     } else {
-//         saveTimer = 0;
-//         saveTrigger = true;
-//     }
-// }
-
 inline void GainMode0(double *left, double *right) {}
 
 inline void gainControl(double *left, double *right) {
@@ -566,23 +550,24 @@ inline void gainControl(double *left, double *right) {
     // up with output dynamic setting selected.
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
-                            (1.2 - outputAmplification));
-    *left = modifier * hardClip(*left);
-    *right = modifier * hardClip(*right);
-    // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
+    const double clipLimit =
+        (1. - outputAmplification) * (1. - outputAmplification);
+    const double modifier =
+        1. + ((1. / (clipLimit + 0.000000001)) * (1.2 - outputAmplification));
+    *left = modifier * hardClip(*left, clipLimit);
+    *right = modifier * hardClip(*right, clipLimit);
   } break;
   case 2: {
     // Same as last but with saturation
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
-                            (1.2 - outputAmplification));
+    const double clipLimit =
+        (1. - outputAmplification) * (1. - outputAmplification);
+    const double modifier =
+        1. + ((1. / (clipLimit + 0.000000001)) * (1.2 - outputAmplification));
 
-    double leftClipped = modifier * hardClip(*left);
-    double rightClipped = modifier * hardClip(*right);
+    double leftClipped = modifier * hardClip(*left, clipLimit);
+    double rightClipped = modifier * hardClip(*right, clipLimit);
 
     saturatedLeft = leftClipped;
     saturatedRight = rightClipped;
@@ -625,30 +610,25 @@ inline void gainControl(double *left, double *right) {
     hardLimiter(left, right);
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    *left = hardClip(*left);
-    *right = hardClip(*right);
-    // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
-    double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
-                            (1.2 - outputAmplification));
-    *left *= modifier;
-    *right *= modifier;
-
+    const double clipLimit =
+        (1. - outputAmplification) * (1. - outputAmplification);
+    const double modifier =
+        1. + ((1. / (clipLimit + 0.000000001)) * (1.2 - outputAmplification));
+    *left = modifier * hardClip(*left, clipLimit);
+    *right = modifier * hardClip(*right, clipLimit);
   } break;
   case 5: {
     // Stock VCV clip then Bogaudio LMTR
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardClipGain = (1. - outputAmplification) * (1. - outputAmplification);
-    *left = hardClip(*left);
-    *right = hardClip(*right);
-    // modifier = (-9.8 / (-40.5 + (40. * outputAmplification))) + 0.758;
-    double modifier = 1. + ((1. / (hardClipGain + 0.000000001)) *
-                            (1.2 - outputAmplification));
-    *left *= modifier;
-    *right *= modifier;
-    hardLimiter(left, right);
+    const double clipLimit =
+        (1. - outputAmplification) * (1. - outputAmplification);
+    const double modifier =
+        1. + ((1. / (clipLimit + 0.000000001)) * (1.2 - outputAmplification));
 
+    *left = modifier * hardClip(*left, clipLimit);
+    *right = modifier * hardClip(*right, clipLimit);
+    hardLimiter(left, right);
   } break;
   case 6: {
     softerLimiterLeft.limit = 0.85;
@@ -657,7 +637,6 @@ inline void gainControl(double *left, double *right) {
     campestria::foldbackDistortion(*left, 1. - outputAmplification);
     campestria::foldbackDistortion(*right, 1. - outputAmplification);
     hardLimiter(left, right);
-
   } break;
   case 7: {
     softerLimiterLeft.limit = 0.85;
@@ -712,14 +691,12 @@ inline void gainControl(double *left, double *right) {
     // clipper
     softerLimiterLeft.limit = 0.85;
     softerLimiterRight.limit = 0.85;
-    hardClipGain =
+    const double clipLimit =
         (1. - outputAmplification) * (1. - outputAmplification) + 0.1;
-    *left = hardClip(*left);
-    *right = hardClip(*right);
-    double modifier = 1. + ((1. / (hardClipGain - 0.1 + 0.000000001)) *
-                            (1.2 - outputAmplification));
-    *left *= modifier;
-    *right *= modifier;
+    const double modifier = 1. + ((1. / (clipLimit - 0.1 + 0.000000001)) *
+                                  (1.2 - outputAmplification));
+    *left = modifier * hardClip(*left, clipLimit);
+    *right = modifier * hardClip(*right, clipLimit);
 
     saturatedLeft = *left;
     saturatedRight = *right;
@@ -771,22 +748,6 @@ inline void gainControl(double *left, double *right) {
   }
 
   softLimiter(*left, *right, left, right);
-}
-
-PopFilter clearPopFilter;
-
-inline void prepareToClear() {
-  if (clear) {
-    triggerClear = true;
-    clear = false;
-  }
-
-  clearPopCancelValue = clearPopFilter.process(!triggerClear);
-
-  if (clearPopCancelValue > 1 - 1e-30) {
-    clearPopFilter.value = 1.;
-    clearPopCancelValue = 1.;
-  }
 }
 
 void ReadInputs() {
@@ -957,14 +918,6 @@ int main(void) {
   while (1) {
     ReadSwitches();
 
-    if (clearPopCancelValue < 1e-30) {
-      if (triggerClear) {
-        clearPopFilter.value = 0.;
-        clearPopCancelValue = 0.;
-        reverb.clear();
-        triggerClear = false;
-      }
-    }
     // Clear buffers. Fingers crossed it works.
     // if(triggerClear) {
     //     if(clearPopCancelValue < 0.0001) {
