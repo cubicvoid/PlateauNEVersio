@@ -37,6 +37,8 @@ const double minus20dBGain = 0.1;
 double outputAmplification = 0.0;
 double inputAmplification = 0.0;
 
+const int GAIN_MODE_COUNT = 11;
+
 struct Parameters {
   double wet = 0.5;
 
@@ -61,7 +63,7 @@ struct Parameters {
 
   uint32_t GainMode() { return storage.GetSettings().gainMode; }
   void SetGainMode(uint32_t mode) {
-    storage.GetSettings().gainMode = mode;
+    storage.GetSettings().gainMode = mode % GAIN_MODE_COUNT;
     storage.Save();
   }
 };
@@ -79,10 +81,25 @@ inline void prepareLeds(const double &w, const double &x, const double &y,
   hw.SetLed(3, z, 0.0f, 0.0f);
 }
 
+struct CallbackRateTimer {
+  int32_t time = 0;
+  void Advance() { time++; }
+  void Reset() { time = 0; }
+
+  bool Active() { return time != 0; }
+
+  int32_t TicksUntilTime(double sec) {
+    int32_t triggerTime = static_cast<int32_t>(sec * hw.AudioCallbackRate());
+    return triggerTime - time;
+  }
+
+  bool TimeTrigger(double sec) { return TicksUntilTime(sec) == 0; }
+};
+
 struct State {
   static constexpr float TONE_KNOB_HOLD_SEC = 1.0;
 
-  unsigned int buttonHoldTimer = 0;
+  CallbackRateTimer buttonHold;
   unsigned int buttonOffTimer = 0;
 
   double lockedModDepthValue = 0.;
@@ -361,17 +378,6 @@ inline void prepareToClear() {
   }
 }
 
-inline void processButton_GainMode() {
-  if (hw.tap.Pressed()) {
-    if (state.buttonHoldTimer < 5 * 160000) {
-      gainModeLedCountdown = gainModeLedDisplayTime * hw.AudioCallbackRate();
-    }
-  }
-}
-
-void processButton_ClearMode() {}
-void processButton_FreezeMode() { freeze = hw.tap.Pressed(); }
-
 // Button has three modes, gain control, buffer clear, freeze.
 // Hold down the button for 10 seconds, when the LEDs come on
 // press again within one second to confirm mode change. If x gain control
@@ -380,35 +386,30 @@ void processButton_FreezeMode() { freeze = hw.tap.Pressed(); }
 // holding the button will freeze the buffers.
 inline void ProcessButton() {
 
-  if (hw.tap.Pressed()) {
-    state.buttonHoldTimer++;
-  } else {
-    state.buttonHoldTimer = 0;
+  if (hw.SwitchPressed()) {
+    if (hw.tap.RisingEdge()) {
+      state.buttonHold.Reset();
+    }
+    state.buttonHold.Advance();
   }
 
-  switch (state.buttonMode) {
-  case ButtonMode::Gain:
-    processButton_GainMode();
-    break;
-  case ButtonMode::Clear:
-    processButton_ClearMode();
-    break;
-  case ButtonMode::Freeze:
-    processButton_FreezeMode();
-    break;
-  }
   if (hw.SwitchPressed()) {
-    if (state.buttonHoldTimer ==
-        10 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
+
+    if (state.buttonHold.TimeTrigger(10.0)) {
+      // We hit 10 seconds, start the LED timer to signal the confirmation
+      // sequence.
       ledTimer.Start();
     }
-    if (state.buttonHoldTimer ==
-        11 * static_cast<unsigned int>(hw.AudioCallbackRate())) {
-      if (state.buttonMode == ButtonMode::Gain) {
+    if (state.buttonMode == ButtonMode::Gain) {
+      if (state.buttonHold.TicksUntilTime(5.0) > 0) {
+        // Have been holding for less than five seconds.
+        gainModeLedCountdown = gainModeLedDisplayTime * hw.AudioCallbackRate();
+      }
 
-        // params.modDepth = 0.5 + (state.lockedModDepthValue * 15.5);
+      if (state.buttonHold.TimeTrigger(11.0)) {
+        // 11 second button hold in gain mode with no confirmation sequence,
+        // toggle locked mod depth mode
         if (state.lockModDepthTo3_125_) {
-
           state.lockModDepthTo3_125_ = false;
           params.modShape = 0.5;
         } else {
@@ -436,21 +437,21 @@ inline void ProcessButton() {
   } else {
 
     if (hw.tap.FallingEdge()) {
-      if ((state.buttonHoldTimer > 10 * hw.AudioCallbackRate()) and
-          (state.buttonHoldTimer < 11 * hw.AudioCallbackRate())) {
+      if (state.buttonHold.TicksUntilTime(10.0) < 0 &&
+          state.buttonHold.TicksUntilTime(11.0) > 0) {
         // Button released between seconds 10 and 11, enable confirmation
         // sequence.
         confirmationSequence = true;
       }
       if (state.buttonMode == ButtonMode::Gain) {
-        if (state.buttonHoldTimer < 0.25f * hw.AudioCallbackRate()) {
+        if (state.buttonHold.TicksUntilTime(0.25) > 0) {
+          // Released after < 1/4 second, move to next gain mode
           gainModeLedCountdown =
               gainModeLedDisplayTime * hw.AudioCallbackRate();
           params.SetGainMode(params.GainMode() + 1);
         }
       }
     }
-    state.buttonHoldTimer = 0;
   }
 }
 
