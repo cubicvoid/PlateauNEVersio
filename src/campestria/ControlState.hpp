@@ -39,8 +39,8 @@ struct SmoothedKnob {
 struct ControlState {
   SmoothedKnob knobs[DaisyVersio::KNOB_LAST];
 
-  SwitchState topSwitch = SwitchState::Left;
-  SwitchState bottomSwitch = SwitchState::Right;
+  SwitchState topSwitch = SwitchState::CENTER;
+  SwitchState bottomSwitch = SwitchState::CENTER;
 
   // Initialize specifying how often the Refresh method will be called
   // per second.

@@ -10,7 +10,7 @@
 
 namespace campestria {
 
-enum class SwitchState { Left, Center, Right };
+enum class SwitchState { CENTER, LEFT, RIGHT };
 
 enum class Knob {
   WET,
