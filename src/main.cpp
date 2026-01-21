@@ -283,10 +283,10 @@ void ApplyParameters() {
   reverb.setTankModSpeed(params.modSpeed);
   reverb.setTankModShape(params.modShape);
   reverb.setTankModDepth(params.modDepth);
-  reverb.setInputFilterHighCutoffPitch(10. - (10. * params.inputDampHigh));
-  reverb.setTankFilterHighCutFrequency(10. - (10. * params.reverbDampHigh));
-  reverb.setInputFilterLowCutoffPitch(params.inputDampLow * 10.);
-  reverb.setTankFilterLowCutFrequency(params.reverbDampLow * 10.);
+  reverb.setInputFilterHighCutoffPitch(params.inputDampHigh);
+  reverb.setTankFilterHighCutFrequency(params.reverbDampHigh);
+  reverb.setInputFilterLowCutoffPitch(params.inputDampLow);
+  reverb.setTankFilterLowCutFrequency(params.reverbDampLow);
   reverb.setTankDiffusion(params.diffusion);
   reverb.enableInputDiffusion(params.diffusion != 0);
   reverb.freeze(params.freeze);
