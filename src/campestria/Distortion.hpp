@@ -68,4 +68,12 @@ inline double hardLimit100_(const double &x) {
 
 inline double amp120_(const double &x) { return x * 1.2; }
 
+inline double saturation(double x) {
+  return x * (27. + x * x) / (27. + 9. * x * x);
+}
+
+inline double hardClip(const double &x, double limit) {
+  return std::max(std::min(x, limit), -limit);
+}
+
 } // namespace campestria
