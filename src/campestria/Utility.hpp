@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core.hpp"
+
 #include <algorithm>
 
 namespace campestria {
@@ -64,6 +66,24 @@ struct RippedSpeakerFilter {
   }
 
   void SetThreshold(double threshold) { threshold_ = threshold; }
+};
+
+class CallbackRateTimer {
+public:
+  void Start(float timeoutSec) {
+    countdown_ = timeoutSec * hw.AudioCallbackRate();
+  }
+  void Cancel() { countdown_ = 0; }
+  bool Active() { return countdown_ != 0; }
+
+  void Process() {
+    if (countdown_ > 0) {
+      countdown_--;
+    }
+  }
+
+private:
+  uint32_t countdown_ = 0;
 };
 
 } // namespace campestria

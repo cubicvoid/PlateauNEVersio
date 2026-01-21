@@ -6,7 +6,7 @@
 extern float DSY_SDRAM_BSS sdramData[50][144000];
 extern unsigned int _InterpDelayCount;
 extern double _InterpDelayHold;
-extern double clearPopCancelValue;
+extern double _InterpDelayPopFilterCoeff;
 
 class InterpDelay {
 public:
@@ -65,8 +65,8 @@ public:
     dataR = sdramData[bufferNumber][r];
     dataUpperR = sdramData[bufferNumber][upperR];
 
-    dataR *= clearPopCancelValue;
-    dataUpperR *= clearPopCancelValue;
+    dataR *= _InterpDelayPopFilterCoeff;
+    dataUpperR *= _InterpDelayPopFilterCoeff;
 
     output = _InterpDelayHold * (dataR + f * (dataUpperR - dataR));
     //}
