@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../util/VersioState.hpp"
 #include "Core.hpp"
 
 #include <algorithm>
@@ -7,107 +8,206 @@
 namespace campestria {
 
 using daisy::DaisyVersio;
+using namespace util::daisy;
 
-// Snap-to-endpoints and smoothing on top of the raw values from the driver.
-// We use this instead of just overriding the coefficients for the smoothing
-// filters built into the ADC API because that would run before the endpoint
-// clipping and we want the smoothing to happen after.
-struct SmoothedKnob {
-  double value;
-  double rawValue_;
-
-  bool moving = false;
-  double coeff = 0.016;
-
-  void Init(uint32_t sampleRate, float initialValue = 0.0f) {
-    rawValue_ = value = initialValue;
-    coeff = std::min(16.0f / sampleRate, 1.0f);
-  }
-
-  void Refresh(double rawValue) {
-    moving = fabs(rawValue_ - rawValue) > 0.00025;
-    rawValue_ = rawValue;
-    const double scaled = rawValue * 1.01 - 0.005;
-    const double clipped = std::max(std::min(scaled, 1.0), 0.0);
-    value += coeff * (clipped - value);
-    if (value <= 1.0e-030) {
-      value = 0.0;
-    }
-  }
+enum class KnobID {
+  WET,
+  MOD_SPEED,
+  TONE,
+  MOD_DEPTH,
+  DECAY,
+  TIME_SCALE,
+  PRE_DELAY,
+  LAST
 };
 
-// Wrapper struct around the libDaisy-provided Switch class, to implement
-// smoothing and rising/falling edge behavior that is easier to work with.
-// Changes to baseline logic:
-// - Does not report multiple rising edges without a falling edge between
-//  them, or vice versa.
-// - When a rising edge is reported, Pressed() returns true.
-// - A gap in the hold signal too short to hit the falling edge threshold
-//   (8 ms) does not reset the hold time.
-// - Rising / falling edges are reported after the button state has been
-//   stable for 8 ms instead of 7 ms.
-// Overall: Pressed() returns false until the 8th consecutive on state,
-// at which point a rising edge is reported, and Pressed() then returns
-// true until the 8th consecutive off state, at which point a falling
-// edge is reported.
-class Switch {
-public:
-  Switch(daisy::Switch *raw) : raw_(raw) {}
+enum class ToneKnobMode {
+  INPUT_DAMP_LOW,
+  INPUT_DAMP_HIGH,
+  REVERB_DAMP_LOW,
+  REVERB_DAMP_HIGH,
+  DIFFUSION,
+  INPUT_AMPLIFICATION,
+  OUTPUT_AMPLIFICATION,
+  LAST
+};
+static constexpr int TONE_KNOB_MODE_COUNT =
+    static_cast<int>(ToneKnobMode::LAST);
 
-  void Debounce();
+static constexpr int TONE_KNOB_LED_MASKS[TONE_KNOB_MODE_COUNT] = {
+    0b1000, 0b0100, 0b0010, 0b0001, 0b1111, 0b1111, 0b1111};
 
-  bool Pressed() { return last_edge_ == EdgeType::RISING; }
-  bool RisingEdge() { return updated_ && last_update_ == rise_time_; }
-  bool FallingEdge() { return updated_ && last_update_ == fall_time_; }
-
-  float SecondsSinceLastPress() {
-    return static_cast<float>(last_update_ - rise_time_) * 0.0001;
+inline uint8_t ToneKnobLEDMask(ToneKnobMode mode) {
+  int index = static_cast<int>(mode);
+  if (index < 0 || index >= TONE_KNOB_MODE_COUNT) {
+    return 0;
   }
+  return TONE_KNOB_LED_MASKS[index];
+}
+
+class ToneKnobState {
+public:
+  /*ToneKnobState() {
+    _applyValue(ToneKnobMode::INPUT_DAMP_LOW, 0);
+    _applyValue(ToneKnobMode::INPUT_DAMP_HIGH, 0);
+    _applyValue(ToneKnobMode::REVERB_DAMP_LOW, 0);
+    _applyValue(ToneKnobMode::REVERB_DAMP_HIGH, 0);
+    _applyValue(ToneKnobMode::DIFFUSION, 1);
+    _applyValue(ToneKnobMode::INPUT_AMPLIFICATION, 0);
+    _applyValue(ToneKnobMode::OUTPUT_AMPLIFICATION, 0);
+  }*/
+
+  void Process(Switch3Pos topSwitch, Switch3Pos bottomSwitch,
+               const SmoothedKnob &toneKnob);
+
+  /*void ApplyLEDs(float led[4]) {
+    if (ledState.GetSource() == LEDState::Source::TONE_KNOB) {
+      const uint8_t mask = ledMasks[mode];
+      const double value = values[mode];
+
+      for (int i = 0; i < 4; i++) {
+        led[i] = !!(mask & (8 >> i)) * value;
+      }
+    }
+  }*/
+
+  bool Updated() { return updated; }
 
 private:
-  daisy::Switch *raw_;
+  bool updated;
+  double values[TONE_KNOB_MODE_COUNT];
+  ToneKnobMode mode;
 
-  uint32_t last_update_ = 0;
-  bool updated_ = false;
-  uint8_t state_ = 0;
+  float leds[4];
 
-  enum class EdgeType { NONE, RISING, FALLING };
-  EdgeType last_edge_ = EdgeType::NONE;
-  uint32_t rise_time_ = 0;
-  uint32_t fall_time_ = 0;
+  /*void _applyValue(double knobValue) {
+    values[mode] = knobValue;
+    switch (mode) {
+    case DIFFUSION:
+      params.diffusion = knobValue * 0.7;
+      break;
+    case INPUT_AMPLIFICATION:
+      params.inputAmplification = (1.0 + knobValue * 7.) / 8.0;
+      break;
+    case INPUT_DAMP_HIGH:
+      params.inputDampHigh = 10.0 * (1.0 - knobValue);
+      break;
+    case REVERB_DAMP_HIGH:
+      params.reverbDampHigh = 10.0 * (1.0 - knobValue);
+      break;
+    case INPUT_DAMP_LOW:
+      params.inputDampLow = 10.0 * knobValue;
+      break;
+    case REVERB_DAMP_LOW:
+      params.reverbDampLow = 10.0 * knobValue;
+      break;
+    case OUTPUT_AMPLIFICATION:
+      params.outputAmplification = 1.0 - knobValue;
+      break;
+    default:
+      break;
+    }
+  }*/
+};
+
+class LEDState {
+public:
+  enum class Source {
+    NONE,
+    BUTTON_CONFIRM,
+    BUFFER_CLEAR,
+    GAIN_MODE,
+    TONE_KNOB
+  };
+
+  void SetSource(Source source, float timeoutSec = 1.0f) {
+    source_ = source;
+    if (source != Source::NONE) {
+      ledTimer_.Start(timeoutSec);
+    } else {
+      ledTimer_.Cancel();
+    }
+  }
+
+  void CancelSource(Source source) {
+    if (source_ == source) {
+      ledTimer_.Cancel();
+      source = Source::NONE;
+    }
+  }
+
+  Source GetSource() { return source_; }
+
+  void Process() {
+    ledTimer_.Process();
+    if (!ledTimer_.Active()) {
+      source_ = Source::NONE;
+    }
+  }
+
+  void Apply();
+
+private:
+  Source source_ = Source::NONE;
+  CallbackRateTimer ledTimer_;
+};
+
+enum class ButtonMode { GAIN, CLEAR, FREEZE };
+
+class ButtonState {
+public:
+  ButtonMode GetMode() { return mode_; }
+  void NextMode() { mode_ = _nextMode(mode_); }
+
+  void Process();
+
+private:
+  ButtonMode mode_ = ButtonMode::GAIN;
+
+  ButtonMode _nextMode(ButtonMode mode) {
+    switch (mode) {
+    case ButtonMode::GAIN:
+      return ButtonMode::CLEAR;
+    case ButtonMode::CLEAR:
+      return ButtonMode::FREEZE;
+    default:
+      return ButtonMode::GAIN;
+    }
+  }
 };
 
 // The logical state of the input parameters from the DaisyVersio driver after
 // basic clipping and smoothing.
-struct ControlState {
-  SmoothedKnob knobs[DaisyVersio::KNOB_LAST];
-
-  SwitchState topSwitch = SwitchState::CENTER;
-  SwitchState bottomSwitch = SwitchState::CENTER;
-
-  Switch tap;
-
-  ControlState() : tap(&hw.tap) {}
-
+class ControlState {
+public:
   // Initialize specifying how often the Refresh method will be called
   // per second.
-  void Init(uint32_t refreshFreq) {
-    for (int i = 0; i < DaisyVersio::KNOB_LAST; i++) {
-      knobs[i].Init(refreshFreq, hw.GetKnobValue(i));
-    }
+  void Init(const DaisyVersio &hw, uint32_t refreshFreq) {
+    versio.Init(hw, refreshFreq);
   }
 
-  void Refresh() {
-    hw.ProcessAnalogControls();
-    for (int i = 0; i < DaisyVersio::KNOB_LAST; i++) {
-      knobs[i].Refresh(hw.GetKnobValue(i));
-    }
-    topSwitch = static_cast<SwitchState>(hw.sw[0].Read());
-    bottomSwitch = static_cast<SwitchState>(hw.sw[1].Read());
-    tap.Debounce();
+  const SmoothedKnob &Knob(KnobID knob) const {
+    return versio.Knob(static_cast<DaisyVersio::AV_KNOBS>(knob));
   }
 
-  const SmoothedKnob &Knob(Knob k) { return knobs[static_cast<int>(k)]; }
+  void Refresh(const daisy::DaisyVersio &hw);
+
+  TriggerInput bufferClearTrigger;
+
+private:
+  VersioState versio;
+  // SmoothedKnob knobs[DaisyVersio::KNOB_LAST];
+  // Switch tap;
+
+  ToneKnobState toneKnob;
+  ButtonState buttonState;
+  LEDState ledState;
+
+  bool awaitingConfirmation_;
+  double lockedModDepthValue = 0.;
+  bool lockModDepthTo3_125_ = false;
+
+  void _refreshTap();
 };
 
 } // namespace campestria

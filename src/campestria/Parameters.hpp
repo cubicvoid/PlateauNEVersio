@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ControlState.hpp"
 #include "Core.hpp"
 #include "Settings.hpp"
 
@@ -40,6 +41,18 @@ public:
   void SetGainMode(uint32_t mode) {
     storage_.GetSettings().gainMode = mode % GAIN_MODE_COUNT;
     storage_.Save();
+  }
+
+  void Apply(const ControlState &controls) {
+    timeScale = controls.Knob(KnobID::TIME_SCALE).value;
+    wet = controls.Knob(KnobID::WET).value;
+    modSpeed = 0.5 + (controls.Knob(KnobID::MOD_SPEED).value * 100.);
+
+    const float scaledDecayKnob =
+        0.0001 + 0.7999 * (1 - controls.Knob(KnobID::DECAY).value);
+    decay = 1 - (scaledDecayKnob * scaledDecayKnob);
+
+    preDelay = controls.Knob(KnobID::PRE_DELAY).value;
   }
 
 private:

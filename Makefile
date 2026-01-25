@@ -5,6 +5,7 @@ TARGET = Campestria
 CPP_SOURCES = src/main.cpp
 CPP_SOURCES += src/campestria/ControlState.cpp
 CPP_SOURCES += src/campestria/GainState.cpp
+CPP_SOURCES += src/util/Controls.cpp
 CPP_SOURCES += lib/ValleyRackFree/utilities/Utilities.cpp
 CPP_SOURCES += lib/ValleyRackFree/Plateau/Dattorro.cpp
 CPP_SOURCES += lib/ValleyRackFree/dsp/filters/OnePoleFilters.cpp
