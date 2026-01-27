@@ -10,7 +10,7 @@ public:
   ReverbState() : reverb(32000, 16, 4.0) {}
 
   void Init(float audioSampleRate) {
-    reverb.setSampleRate(hw.AudioSampleRate());
+    reverb.setSampleRate(audioSampleRate);
 
     // Clear memory for reverb internal buffers
     for (int i = 0; i < 50; i++) {

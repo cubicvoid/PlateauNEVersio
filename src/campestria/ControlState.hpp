@@ -1,7 +1,8 @@
 #pragma once
 
-#include "../util/VersioState.hpp"
-#include "Core.hpp"
+#include "campestria/Core.hpp"
+#include "campestria/Utility.hpp"
+#include "util/VersioState.hpp"
 
 #include <algorithm>
 
@@ -33,17 +34,6 @@ enum class ToneKnobMode {
 };
 static constexpr int TONE_KNOB_MODE_COUNT =
     static_cast<int>(ToneKnobMode::LAST);
-
-static constexpr int TONE_KNOB_LED_MASKS[TONE_KNOB_MODE_COUNT] = {
-    0b1000, 0b0100, 0b0010, 0b0001, 0b1111, 0b1111, 0b1111};
-
-inline uint8_t ToneKnobLEDMask(ToneKnobMode mode) {
-  int index = static_cast<int>(mode);
-  if (index < 0 || index >= TONE_KNOB_MODE_COUNT) {
-    return 0;
-  }
-  return TONE_KNOB_LED_MASKS[index];
-}
 
 class ToneKnobState {
 public:
@@ -112,7 +102,7 @@ private:
 
 class LEDState {
 public:
-  enum class Source {
+  enum class LEDSource {
     NONE,
     BUTTON_CONFIRM,
     BUFFER_CLEAR,
@@ -120,23 +110,9 @@ public:
     TONE_KNOB
   };
 
-  void SetSource(Source source, float timeoutSec = 1.0f) {
-    source_ = source;
-    if (source != Source::NONE) {
-      ledTimer_.Start(timeoutSec);
-    } else {
-      ledTimer_.Cancel();
-    }
-  }
+  void Init(float callbackRate) { ledTimer_.Init(callbackRate); }
 
-  void CancelSource(Source source) {
-    if (source_ == source) {
-      ledTimer_.Cancel();
-      source = Source::NONE;
-    }
-  }
-
-  Source GetSource() { return source_; }
+  // Source GetSource() { return source_; }
 
   void Process() {
     ledTimer_.Process();
@@ -180,34 +156,66 @@ private:
 // basic clipping and smoothing.
 class ControlState {
 public:
-  // Initialize specifying how often the Refresh method will be called
+  // Initialize specifying how often the Process method will be called
   // per second.
-  void Init(const DaisyVersio &hw, uint32_t refreshFreq) {
-    versio.Init(hw, refreshFreq);
+  void Init(const DaisyVersio &hw, float processRate) {
+    versio.Init(hw);
+    ledTimer_.Init(processRate);
   }
 
   const SmoothedKnob &Knob(KnobID knob) const {
     return versio.Knob(static_cast<DaisyVersio::AV_KNOBS>(knob));
   }
 
-  void Refresh(const daisy::DaisyVersio &hw);
+  void Process(const daisy::DaisyVersio &hw);
 
   TriggerInput bufferClearTrigger;
 
 private:
+  enum class LEDSource {
+    NONE,
+    BUTTON_CONFIRM,
+    BUFFER_CLEAR,
+    GAIN_MODE,
+    TONE_KNOB
+  };
+
   VersioState versio;
   // SmoothedKnob knobs[DaisyVersio::KNOB_LAST];
   // Switch tap;
 
-  ToneKnobState toneKnob;
+  // ToneKnobState toneKnob;
   ButtonState buttonState;
-  LEDState ledState;
+
+  bool toneKnobUpdated;
+  double toneKnobValues[TONE_KNOB_MODE_COUNT];
+  ToneKnobMode toneKnobMode;
+
+  LEDSource source_ = LEDSource::NONE;
+  CallbackRateTimer ledTimer_;
 
   bool awaitingConfirmation_;
   double lockedModDepthValue = 0.;
   bool lockModDepthTo3_125_ = false;
 
   void _refreshTap();
+  uint8_t _SetToneKnobLEDs(ToneKnobMode mode);
+
+  void SetSource(LEDSource source, float timeoutSec = 1.0f) {
+    source_ = source;
+    if (source != LEDSource::NONE) {
+      ledTimer_.Start(timeoutSec);
+    } else {
+      ledTimer_.Cancel();
+    }
+  }
+
+  void CancelSource(LEDSource source) {
+    if (source_ == source) {
+      ledTimer_.Cancel();
+      source = LEDSource::NONE;
+    }
+  }
 };
 
 } // namespace campestria

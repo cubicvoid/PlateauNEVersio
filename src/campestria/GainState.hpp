@@ -1,17 +1,17 @@
 #pragma once
 
-#include "Core.hpp"
-#include "Distortion.hpp"
-#include "Parameters.hpp"
+#include "campestria/Core.hpp"
+#include "campestria/Distortion.hpp"
+#include "campestria/Parameters.hpp"
 
 namespace campestria {
 
 class GainState {
 public:
-  void Init() {
+  void Init(float audioSampleRate) {
     bogLimiter.init();
-    softerLimiterLeft.Init(hw.AudioSampleRate());
-    softerLimiterRight.Init(hw.AudioSampleRate());
+    softerLimiterLeft.Init(audioSampleRate);
+    softerLimiterRight.Init(audioSampleRate);
   }
 
   void gainControl(double *left, double *right);

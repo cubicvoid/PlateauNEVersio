@@ -70,11 +70,11 @@ struct RippedSpeakerFilter {
 
 class CallbackRateTimer {
 public:
-  void Start(float timeoutSec) {
-    countdown_ = timeoutSec * hw.AudioCallbackRate();
-  }
+  void Init(float callbackRate) { callbackRate_ = callbackRate; }
+  void Start(float timeoutSec) { countdown_ = timeoutSec * callbackRate_; }
   void Cancel() { countdown_ = 0; }
-  bool Active() { return countdown_ != 0; }
+
+  bool Active() const { return countdown_ != 0; }
 
   void Process() {
     if (countdown_ > 0) {
@@ -84,6 +84,7 @@ public:
 
 private:
   uint32_t countdown_ = 0;
+  float callbackRate_ = 0.f;
 };
 
 } // namespace campestria

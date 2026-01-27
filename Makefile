@@ -23,7 +23,8 @@ CPP_SOURCES += lib/Bogaudio/dsp/filters/utility.cpp
 # Include paths
 C_INCLUDES += \
 	-I. \
-	-Ilib
+	-Ilib \
+	-Isrc
 
 # Library Locations
 LIBDAISY_DIR = ../DaisyExamples/libDaisy/

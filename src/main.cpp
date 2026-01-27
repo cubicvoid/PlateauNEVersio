@@ -6,13 +6,13 @@ namespace campestria {
 
 DaisyVersio hw;
 ControlState controlState;
+Parameters params;
+AudioState audioState;
 
-daisy::PersistentStorage<Settings> storage(hw.seed.qspi);
-Parameters params(storage);
+Settings settings(hw.seed.qspi);
 
-LEDState ledState;
-ButtonState buttonState;
-State state;
+// LEDState ledState;
+// ButtonState buttonState;
 
 GainState gainState;
 
@@ -107,9 +107,9 @@ inline void interpolatingDelayHold() {
   }
 }
 
-inline float SnappedToUnitInterval(float v) {
-  return (v < 0.01f) ? 0.0f : (v > 0.99) ? 1.0f : (v - 0.01f) / 0.98f;
-}
+// inline float SnappedToUnitInterval(float v) {
+//   return (v < 0.01f) ? 0.0f : (v > 0.99) ? 1.0f : (v - 0.01f) / 0.98f;
+// }
 
 // void ProcessTimeScale() {
 //   params.timeScale = controlState.Knob(Knob::TIME_SCALE).value;
@@ -123,7 +123,7 @@ inline float SnappedToUnitInterval(float v) {
 //   params.modSpeed = 0.5 + (controlState.Knob(Knob::MOD_SPEED).value * 100.);
 // //
 
-void ProcessModDepth() {}
+// void ProcessModDepth() {}
 
 // inline void ProcessDecay() {
 //   float scaledKnob =
@@ -145,49 +145,6 @@ void ApplyParameters() {
   reverbState.Apply(params);
 }
 
-void RefreshParameters() {
-  // ProcessTimeScale();
-  // ProcessMix();
-  // ProcessModSpeed();
-  // ProcessDecay();
-  ProcessModDepth();
-  // ProcessPreDelay();
-  // toneKnob.Process();
-}
-
-void LEDState::Apply() {
-  float led[4];
-
-  switch (ledState.GetSource()) {
-  case LEDState::Source::BUTTON_CONFIRM:
-  case LEDState::Source::BUFFER_CLEAR:
-    led[0] = led[1] = led[2] = led[3] = 1.0f;
-    break;
-  case LEDState::Source::GAIN_MODE: {
-    const uint32_t gainModeLEDMask = params.GainMode() + 1;
-    led[0] = !!(gainModeLEDMask & 8);
-    led[1] = !!(gainModeLEDMask & 4);
-    led[2] = !!(gainModeLEDMask & 2);
-    led[3] = !!(gainModeLEDMask & 1);
-
-  } break;
-  case LEDState::Source::TONE_KNOB:
-    toneKnob.ApplyLEDs(led);
-    break;
-  default:
-    led[0] = state.rmsLeftInput;
-    led[1] = state.rmsRightInput;
-    led[2] = state.rmsLeftOutput;
-    led[3] = state.rmsRightInput;
-  }
-
-  for (int i = 0; i < 4; i++) {
-    hw.SetLed(i, led[i], 0.0f, 0.0f);
-  }
-
-  hw.UpdateLeds();
-}
-
 // unsigned int counter = 0;
 void AudioCallback(daisy::AudioHandle::InputBuffer x,
                    daisy::AudioHandle::OutputBuffer out, size_t size) {
@@ -195,14 +152,13 @@ void AudioCallback(daisy::AudioHandle::InputBuffer x,
   hw.ProcessAllControls();
 
   // phase 1: refresh processed control inputs from raw state
-  controlState.Refresh(hw);
+  controlState.Process(hw);
 
   // phase 2: refresh derived parameters
-  params.Apply(controlState);
-  RefreshParameters();
+  params.Process(controlState);
 
-  // phase 3: apply parameters to state
-  ApplyParameters();
+  // phase 3: apply parameters to audio state
+  audioState.ApplyParameters(params);
 
   float leftInputsSquared = 0.0f;
   float rightInputsSquared = 0.0f;
@@ -286,17 +242,17 @@ int main(void) {
 
   ShowStartupLEDs();
 
-  // Load / initialize persistent settings
-  storage.Init(Settings());
+  // Apply persistent settings
+  settings.Load(&params);
 
-  gainState.Init();
+  gainState.Init(hw.AudioSampleRate());
   reverbState.Init(hw.AudioSampleRate());
 
   ShowReadyLEDs();
 
   hw.StartAdc();
 
-  controlState.Init(hw.AudioCallbackRate());
+  controlState.Init(hw, hw.AudioCallbackRate());
 
   hw.StartAudio(AudioCallback);
 

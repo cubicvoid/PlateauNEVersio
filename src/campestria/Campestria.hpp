@@ -1,31 +1,15 @@
 #pragma once
 
-#include "ControlState.hpp"
-#include "Core.hpp"
-#include "Distortion.hpp"
-#include "GainState.hpp"
-#include "Parameters.hpp"
-#include "ReverbState.hpp"
-#include "Settings.hpp"
-#include "Utility.hpp"
+#include "campestria/AudioState.hpp"
+#include "campestria/ControlState.hpp"
+#include "campestria/Core.hpp"
+#include "campestria/Distortion.hpp"
+#include "campestria/GainState.hpp"
+#include "campestria/Parameters.hpp"
+#include "campestria/ReverbState.hpp"
+#include "campestria/Settings.hpp"
+#include "campestria/Utility.hpp"
 
 #include <algorithm>
 
-namespace campestria {
-
-class State {
-public:
-  uint32_t startTime = daisy::System::GetNow();
-
-  bool awaitingConfirmation = false;
-
-  bool bufferClearPending = false;
-
-  float rmsLeftInput = 0.0f;
-  float rmsRightInput = 0.0f;
-
-  float rmsLeftOutput = 0.0f;
-  float rmsRightOutput = 0.0f;
-};
-
-} // namespace campestria
+namespace campestria {} // namespace campestria

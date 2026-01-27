@@ -18,12 +18,12 @@ struct SmoothedKnob {
   bool moving = false;
   double coeff = 0.016;
 
-  void Init(uint32_t sampleRate, float initialValue = 0.0f) {
+  void Init(float processRate, float initialValue = 0.0f) {
     rawValue_ = value = initialValue;
-    coeff = std::min(16.0f / sampleRate, 1.0f);
+    coeff = std::min(16.0f / processRate, 1.0f);
   }
 
-  void Refresh(double rawValue) {
+  void Process(double rawValue) {
     moving = fabs(rawValue_ - rawValue) > 0.00025;
     rawValue_ = rawValue;
     const double scaled = rawValue * 1.01 - 0.005;
@@ -51,7 +51,7 @@ struct SmoothedKnob {
 // edge is reported.
 class Switch {
 public:
-  void Debounce(const ::daisy::Switch &hwSwitch);
+  void Process(const ::daisy::Switch &hwSwitch);
 
   bool Pressed() const { return last_edge_ == EdgeType::RISING; }
   bool RisingEdge() const { return updated_ && last_update_ == rise_time_; }
@@ -76,7 +76,7 @@ class Switch3 {
 public:
   Switch3Pos Position() const { return pos; }
 
-  void Refresh(const ::daisy::Switch3 &sw) {
+  void Process(const ::daisy::Switch3 &sw) {
     pos = static_cast<Switch3Pos>(sw.Read());
   }
 
@@ -92,7 +92,7 @@ public:
 
 private:
   bool value = false;
-}
+};
 
 } // namespace daisy
 } // namespace util
